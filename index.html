@@ -304,6 +304,20 @@ td .sub{margin-top:1px}
   border:1px solid;text-align:center;letter-spacing:.3px}
 .exec-note{font-size:12px;color:var(--muted);margin-top:11px;line-height:1.85}
 .exec-note b{color:var(--text)}
+
+/* 执行体检 · 大白话版 */
+.exec-top{font-size:10.5px;color:var(--muted2);letter-spacing:1.3px;margin-bottom:8px}
+.exec-big{font-size:29px;font-weight:600;letter-spacing:-.8px;line-height:1.25}
+.exec-why{font-size:12.5px;color:#cdd5e1;line-height:1.75;margin-top:9px}
+.sigs{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);
+  border:1px solid var(--line);border-radius:10px;overflow:hidden}
+@media(max-width:720px){.sigs{grid-template-columns:1fr}}
+.sig{background:var(--panel);padding:12px 13px}
+.sig .sk{font-size:10.5px;color:var(--muted2);white-space:nowrap}
+.sig .sv{font-size:16px;font-weight:600;margin-top:4px}
+.sig .st{font-size:11px;color:var(--muted);margin-top:3px;line-height:1.5}
+.ob-wrap{margin-top:12px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+.ob-wrap.hide{display:none}
 .zone{margin-top:14px;border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:var(--panel)}
 .zone .zh{font-size:11px;color:var(--muted2);letter-spacing:.5px;margin-bottom:8px}
 .zone .zr{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:5px}
@@ -453,8 +467,8 @@ details[open] summary{margin-bottom:14px}
   <div class="cards" id="cards"></div>
 
   <div class="sect-title">
-    <h2>买入执行体检</h2><div class="ln"></div>
-    <span class="note">T 层：只管"这一笔、这个价、这个时点"，不管"该不该买"</span>
+    <h2>这一笔现在能不能下手</h2><div class="ln"></div>
+    <span class="note">只管今天这个价划不划算，不管该不该买这只</span>
   </div>
   <div class="tabs" id="execTabs"></div>
   <div class="exec">
@@ -2592,6 +2606,62 @@ function tScore(o) {
 }
 
 
+/* 把五档盘口翻译成人话。
+   五档盘口本来是给做日内差价的人看的：上下各挂 5 个价、每个价挂多少手。
+   对攒股收息来说它只回答一件事——"这一笔现在下手划不划算"。
+   所以这里只输出一个结论 + 三句大白话，原始 10 行报价默认收起来。 */
+function bookRead(o, r) {
+  const z = r.zone;
+  const devAvg = o.avg ? (o.price / o.avg - 1) * 100 : 0;
+  const tot = (o.inside + o.outside);
+  const outR = tot > 0 ? o.outside / tot * 100 : null;
+
+  let big, color, why;
+  if (o.price < z.lo) {
+    big = '急跌，先搞清原因'; color = 'var(--blue)';
+    why = '现价 ' + fmt(o.price, 2) + ' 已经低于今天的开盘区间下沿，通常是出了消息。原因没弄清之前别急着接。';
+  } else if (o.price <= z.hi) {
+    big = '这一笔可以下手'; color = 'var(--red)';
+    why = '现价 ' + fmt(o.price, 2) + ' 在今天的合理区间 ' + fmt(z.lo, 2) + '–' + fmt(z.hi, 2) + ' 里面，不算追高。';
+  } else {
+    const over = (o.price / z.hi - 1) * 100;
+    if (over <= 3) {
+      big = '略高，等回落到 ' + fmt(z.hi, 2); color = 'var(--orange)';
+      why = '现价比合理区间上沿高 ' + over.toFixed(1) + '%，不着急的话挂在 ' + fmt(z.hi, 2) + ' 附近更划算。';
+    } else {
+      big = '这个位置先别买'; color = 'var(--green)';
+      why = '现价比合理区间上沿高 ' + over.toFixed(1) + '%，现在买，成本比今天大多数成交的人都高。';
+    }
+  }
+
+  /* 三个信号，全部说成大白话 */
+  const sigs = [];
+  sigs.push({
+    k: '今天的平均成本',
+    v: fmt(o.avg, 2) + ' 元',
+    tag: Math.abs(devAvg) < 0.3 ? '现价贴着均价' : (devAvg > 0 ? '现价比均价高 ' + devAvg.toFixed(1) + '%' : '现价比均价低 ' + Math.abs(devAvg).toFixed(1) + '%'),
+    good: devAvg <= 0.3
+  });
+  sigs.push({
+    k: '挂单：想买的 vs 想卖的',
+    v: fmt(r.ratio, 2) + ' 倍',
+    tag: r.ratio >= 1.2 ? '下方接单厚，跌下去有人接'
+        : r.ratio <= 0.8 ? '上方压单多，涨上去有人卖'
+        : '两边差不多，没有明显倾向',
+    good: r.ratio >= 1.0
+  });
+  sigs.push({
+    k: '主动买还是主动卖',
+    v: outR === null ? '—' : outR.toFixed(0) + '% 是主动买',
+    tag: outR === null ? '没有这笔数据'
+        : outR >= 55 ? '主动买的多，有人在抢'
+        : outR <= 45 ? '主动卖的多，有人在走'
+        : '基本对半，观望为主',
+    good: outR !== null && outR >= 45 && outR <= 55
+  });
+  return { big, color, why, sigs, devAvg, outR };
+}
+
 function renderExec() {
   const tabs = document.getElementById('execTabs');
   const left = document.getElementById('execLeft');
@@ -2620,36 +2690,38 @@ function renderExec() {
   const s = STOCK_DATA.find(x => x.code === execCur);
   const o = toExec(s);
   const r = tScore(o);
+  const rd = bookRead(o, r);
 
   const span = Math.max(0.0001, (r.zone.hi * 1.15) - r.zone.lo);
   const zonePos = Math.max(0, Math.min(100, (o.price - r.zone.lo) / span * 100));
 
   left.innerHTML = `
-    <div class="exec-score"><b style="color:${r.color}">${r.total}</b><span>T-SCORE / 100</span></div>
-    <div class="exec-verdict" style="color:${r.color};border-color:${r.color}44;background:${r.color}14">${r.verdict}</div>
+    <div class="exec-top">这一笔现在能不能下手</div>
+    <div class="exec-big" style="color:${rd.color}">${rd.big}</div>
+    <div class="exec-why">${rd.why}</div>
     <div class="exec-note">
-      ${o.name} ${o.code} · 现价 <b>${fmt(o.price,2)}</b>（${o.chg>0?'+':''}${fmt(o.chg,2)}%）· 均价 ${fmt(o.avg,3)}<br>
-      战略层 S = <b>${fmt(o.sScore,1)}</b> 分 ${o.sScore<35?'（不合格，T 层不参与决策）':''}
+      ${o.name} ${o.code} · 现价 <b>${fmt(o.price,2)}</b>（${o.chg>0?'+':''}${fmt(o.chg,2)}%）<br>
+      今天成交价落在 ${fmt(r.zone.lo,2)} – ${fmt(r.zone.hi,2)} 这一段比较合理
     </div>
     <div class="zone">
-      <div class="zh">当日合理买入区间</div>
-      <div class="zr"><span>下沿（当日最低）</span><b>${fmt(r.zone.lo,2)}</b></div>
-      <div class="zr"><span>上沿（均价 / 最低+2%）</span><b>${fmt(r.zone.hi,2)}</b></div>
+      <div class="zh">今天合适的买入价</div>
+      <div class="zr"><span>便宜的一头</span><b>${fmt(r.zone.lo,2)}</b></div>
+      <div class="zr"><span>贵的一头</span><b>${fmt(r.zone.hi,2)}</b></div>
       <div class="zb"><i style="left:${zonePos}%"></i></div>
       <div style="display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted2)">
         <span>${fmt(r.zone.lo,2)}</span><span>现价 ${fmt(o.price,2)}</span><span>${fmt(r.zone.hi*1.15,2)}</span>
       </div>
       <div class="zmark" style="color:${r.zone.color}">${r.zone.mark}</div>
     </div>
-    ${r.veto.length ? `<div class="veto"><b>一票否决（${r.veto.length} 条）</b><br>${r.veto.join('<br>')}</div>` : ''}
+    ${r.veto.length ? `<div class="veto"><b>这几种情况别买（${r.veto.length} 条）</b><br>${r.veto.join('<br>')}</div>` : ''}
   `;
 
-  const maxV = Math.max(1, ...o.asks.map(a => a[1]), ...o.bids.map(b => b[1]));
-  const askRows = o.asks.slice().reverse().map(a => `<div class="ob-row ask ${a[1]>maxV*0.25?'big':''}">
+  const maxV = Math.max(1, ...asArr(o.asks).map(a => a[1]), ...asArr(o.bids).map(b => b[1]));
+  const askRows = asArr(o.asks).slice().reverse().map(a => `<div class="ob-row ask ${a[1]>maxV*0.25?'big':''}">
       <span class="p">${fmt(a[0],2)}</span>
       <span class="bar"><i style="width:${a[1]/maxV*100}%"></i></span>
       <span class="v">${a[1]}</span></div>`).join('');
-  const bidRows = o.bids.map(b => `<div class="ob-row bid ${b[1]>maxV*0.25?'big':''}">
+  const bidRows = asArr(o.bids).map(b => `<div class="ob-row bid ${b[1]>maxV*0.25?'big':''}">
       <span class="p">${fmt(b[0],2)}</span>
       <span class="bar"><i style="width:${b[1]/maxV*100}%"></i></span>
       <span class="v">${b[1]}</span></div>`).join('');
@@ -2664,21 +2736,48 @@ function renderExec() {
       <span class="dp">${it.pts}/${it.max}</span></div>`;
   }).join('');
 
+  const sigHtml = rd.sigs.map(x => `<div class="sig">
+      <div class="sk">${x.k}</div>
+      <div class="sv mono" style="color:${x.good ? 'var(--red)' : 'var(--text)'}">${x.v}</div>
+      <div class="st">${x.tag}</div>
+    </div>`).join('');
+
   right.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:9px">
-      <span style="font-size:12px;color:var(--muted)">五档盘口 · 卖压在上，承接在下</span>
-      <span style="font-size:11px;color:var(--muted2)">买 ${r.bidSum} 手 : 卖 ${r.askSum} 手 = ${fmt(r.ratio,2)}</span>
-    </div>
-    <div class="ob">
-      ${askRows}
-      <div class="ob-mid">
-        <span class="lb">现价</span><span class="pv">${fmt(o.price,2)}</span>
-        <span class="cg" style="color:${o.chg>=0?'var(--red)':'var(--green)'}">${o.chg>0?'+':''}${fmt(o.chg,2)}%</span>
+    <div class="exec-top">三个信号 · 用大白话说</div>
+    <div class="sigs">${sigHtml}</div>
+    <button class="tbl-toggle" id="obToggle" type="button" style="margin-top:14px">展开五档盘口与打分明细</button>
+    <div class="ob-wrap hide" id="obWrap">
+      <div style="font-size:11.5px;color:var(--muted2);line-height:1.7;margin-bottom:8px">
+        下面 10 行是「挂单队列」：上半部是有人想把股票卖给谁（报价越高越靠上），下半部是想买的人出的价。
+        数字是挂了多少手（1 手 = 100 股）。<b>攒股收息不用看这个，它只影响今天几分钟的成交价。</b>
       </div>
-      ${bidRows}
+      <div class="ob">
+        ${askRows}
+        <div class="ob-mid">
+          <span class="lb">现价</span><span class="pv">${fmt(o.price,2)}</span>
+          <span class="cg" style="color:${o.chg>=0?'var(--red)':'var(--green)'}">${o.chg>0?'+':''}${fmt(o.chg,2)}%</span>
+        </div>
+        ${bidRows}
+      </div>
+      <div style="font-size:11px;color:var(--muted2);margin:10px 0 6px">
+        买 ${r.bidSum} 手 : 卖 ${r.askSum} 手 = ${fmt(r.ratio,2)} 倍 · 执行分 ${r.total}/100
+      </div>
+      <div class="dtl">${dtl}</div>
     </div>
-    <div class="dtl">${dtl}</div>
   `;
+  initObToggle();
+}
+
+/* 报价数组兜底：抓不到盘口时不要因为 undefined.map 把整块打崩 */
+function asArr(v) { return Array.isArray(v) ? v.filter(x => Array.isArray(x) && x.length >= 2) : []; }
+
+function initObToggle() {
+  const btn = document.getElementById('obToggle');
+  const wrap = document.getElementById('obWrap');
+  if (!btn || !wrap) return;
+  const paint = () => { btn.textContent = wrap.classList.contains('hide') ? '展开五档盘口与打分明细' : '收起五档盘口与打分明细'; };
+  paint();
+  btn.onclick = () => { wrap.classList.toggle('hide'); paint(); };
 }
 
 /* ============ 搜索 ============ */
