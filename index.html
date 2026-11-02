@@ -238,6 +238,10 @@ td .sub{margin-top:1px}
 .buyline .c .p{font-size:14px;font-weight:600;margin-top:2px}
 .buyline .c .d{font-size:10px;color:var(--muted2);margin-top:1px}
 .cheap{font-size:11.5px;font-weight:600;white-space:nowrap}
+/* 好公司不合格：这是否决级信息，必须一眼看到 */
+.goodco{font-size:11px;font-weight:600;padding:3px 9px;border-radius:6px;white-space:nowrap}
+.goodco.bad{color:var(--green);background:rgba(63,168,122,.12);border:1px solid rgba(63,168,122,.4)}
+.goodco.weak{color:var(--orange);background:rgba(221,154,63,.1);border:1px solid rgba(221,154,63,.35)}
 /* 什么时候卖 */
 .sell{margin-top:13px;border:1px solid var(--line2);border-radius:10px;padding:13px 16px;
   background:rgba(120,140,170,.05)}
@@ -1664,9 +1668,47 @@ function score(s) {
     else if (verdict === '可以分批买') { verdict = '已买就拿着，没买先等等'; vcolor = 'var(--muted)'; }
   }
 
+  /* ---- 好公司门槛：价格再便宜，公司不行也不算数 ----
+     为什么必须有这一条：好价格满分 35 分只要"便宜"就能拿，而坏公司天生最便宜
+     （股价跌 → PE/PB/股息率/位置全部漂亮）→ 价格分成了对坏公司的奖励。
+     民生银行就是这个漏洞的教科书案例：好公司只有 22.5/40（ROE 5%、Q3 净利 -33%），
+     但好价格 35/35 满分，总分 74.5，差 0.5 分就是"建议买"。
+     "做好人买好股"里，好股是前提，价格是条件——顺序反了就成了捡烟蒂。
+     判据只用 A1（盈利质量），因为金融股 A3 被钉死 6 分、A2 也天然偏低，
+     用 A 总分做门槛会误伤太保这种 ROE 15% 的好公司。 */
+  let goodCo = 'ok';   // ok / weak / bad
+  const profitCrash = (s.profitYoy < -15);
+  const roeLow = (s.roeAnn != null && s.roeAnn < 4);
+  if (A1 < 6 && (profitCrash || roeLow)) goodCo = 'bad';
+  else if (A1 < 8) goodCo = 'weak';
+
+  if (goodCo === 'bad') {
+    /* 硬封顶：不给任何"买"的档位，分数再高也一样 */
+    verdict = '先别买（已买可减）'; vcolor = 'var(--blue)';
+    flags.push({ t: 'bad', m: '不是好公司：盈利质量只有 ' + A1.toFixed(1) + '/15（ROE '
+      + fmt(s.roeAnn, 1) + '%、净利 ' + (s.profitYoy > 0 ? '+' : '') + fmt(s.profitYoy, 1)
+      + '%、营收 ' + fmt(s.revYoy, 1) + '%）——便宜也不买，这不是错杀' });
+  } else if (goodCo === 'weak' && verdict === '建议买') {
+    verdict = '可以分批买'; vcolor = 'var(--orange)';
+    flags.push({ t: 'warn', m: '好公司偏弱：盈利质量 ' + A1.toFixed(1) + '/15（ROE '
+      + fmt(s.roeAnn, 1) + '%），不够格给"建议买"' });
+  }
+
   /* ---- 现在贵不贵：估值 + 位置，取更贵的那个 ---- */
   const exp = expensive(s);
-  const cheap = exp.word, cheapColor = exp.color, cheapShort = exp.short, cheapDetail = exp.detail;
+  let cheap = exp.word, cheapColor = exp.color, cheapShort = exp.short, cheapDetail = exp.detail;
+
+  /* 不是好公司时，"三门槛全过"不能叫便宜——那是市场对资产质量的定价，
+     不是被错杀。民生 PB 0.26 就是这么来的。 */
+  if (goodCo === 'bad' && exp.lv <= 2) {
+    cheap = '假便宜'; cheapColor = 'var(--green)';
+    cheapShort = '三门槛全过，但盈利在崩';
+    cheapDetail = 'PE/PB/股息率好看是因为股价跌，市场在对资产质量定价，不是错杀。'
+      + 'ROE ' + fmt(s.roeAnn, 1) + '%、净利 ' + fmt(s.profitYoy, 1) + '%，这个便宜有原因。';
+  } else if (goodCo === 'bad' && exp.lv === 3) {
+    cheap = '便宜但公司不行'; cheapColor = 'var(--green)';
+    cheapShort = '价格不贵，可惜不是好公司';
+  }
 
   dims = {
     A: { v:A, max:40, label:'好公司', color:'var(--gold)' },
@@ -1675,10 +1717,10 @@ function score(s) {
     D: { v:D, max:10, label:'技术面', color:'var(--green)' }
   };
 
-  const sell = sellAdvice(s, { total, verdict, vcolor }, exp);
+  const sell = sellAdvice(s, { total, verdict, vcolor, goodCo, a1: A1 }, exp);
 
   return { total, raw: Math.round(raw*10)/10, dims, detail:d, flags, verdict, vcolor,
-           cheap, cheapColor, cheapShort, cheapDetail, sell, exp, trap, chase };
+           cheap, cheapColor, cheapShort, cheapDetail, sell, exp, goodCo, trap, chase };
 }
 
 /* ---- 贵不贵：估值门槛 + 价格位置，两把尺子取"更贵"的那个 ----
@@ -1735,9 +1777,13 @@ function sellAdvice(s, sc, exp) {
   /* A 分红 */
   const dy = s.divYield || 0, py = (s.profitYoy == null ? 0 : s.profitYoy), pay = s.payout || 0;
   const finLike = !!s.isFinancial || FIN_CODES.has(String(s.code));
+  /* 金融股的会计口径豁免只在 ROE 还站得住时成立。
+     民生 ROE 只有 5%、净利 -33%，这不是"投资收益波动"，是经营真的在退——
+     拿会计口径替它开脱，就把最该警惕的那类票放过去了。 */
+  const finExempt = finLike && py < -15 && (s.roeAnn != null && s.roeAnn >= 8);
   if (isIdx) {
     items.push({ t: 'ok', m: '指数/基金没有"公司砍分红"这回事，分红断供这一条不适用（ETF 分红随成分股走）' });
-  } else if (finLike && py < -15) {
+  } else if (finExempt) {
     /* 金融股单期利润受投资收益、准备金折现率、拨备节奏影响，
        -20% 多半是会计口径不是经营恶化，不当作分红断供信号（与打分逻辑保持一致）。 */
     items.push({ t: 'warn', m: '净利 ' + fmt(py, 1) + '%——金融股这个数看会计口径，不等于分红要砍；真正要看的是支付率 ' + fmt(pay, 0) + '%' + (pay < 50 ? '（有余力）' : '') });
@@ -1758,7 +1804,11 @@ function sellAdvice(s, sc, exp) {
   }
 
   /* B 贵不贵 */
-  if (exp.lv >= 5 && (s.pos52 || 0) > 95 && (exp.passN != null && exp.passN <= 1)) {
+  if (sc.goodCo === 'bad' && exp.lv <= 2) {
+    /* 不是好公司时，"三门槛全过"不是便宜，是市场在定价它的资产质量 */
+    lv = Math.max(lv, 1);
+    items.push({ t: 'warn', m: '三门槛全过，但这是"假便宜"——便宜的原因是盈利在崩，不是被错杀' });
+  } else if (exp.lv >= 5 && (s.pos52 || 0) > 95 && (exp.passN != null && exp.passN <= 1)) {
     lv = 2;
     items.push({ t: 'bad', m: '位置 ' + fmt(s.pos52, 0) + '%（一年最高）且估值门槛基本不过 → 持有它没有理由了' });
   } else if (exp.lv >= 5) {
@@ -1781,7 +1831,18 @@ function sellAdvice(s, sc, exp) {
     lv = Math.max(lv, 1);
     items.push({ t: 'warn', m: '综合分 ' + fmt(total, 1) + '（35–48 档）→ 已持有的该减，没持有的别进' });
   } else {
-    items.push({ t: 'ok', m: '综合分 ' + fmt(total, 1) + '（48 分以上）→ 还站得住' });
+    items.push({ t: 'ok', m: '综合分 ' + fmt(total, 1) + '（48 分以上）'
+      + (sc.goodCo === 'bad' ? '，但分数是靠"便宜"撑起来的，公司本身不合格' : '→ 还站得住') });
+  }
+
+  /* D 不是好公司：分数可能被"便宜"撑得很高，但公司本身不行 */
+  if (sc.goodCo === 'bad') {
+    lv = 2;
+    items.push({ t: 'bad', m: '不是好公司（盈利质量 ' + fmt(sc.a1, 1) + '/15）→ 分数高是因为便宜，'
+      + '该换掉而不是该加仓。便宜有便宜的原因' });
+  } else if (sc.goodCo === 'weak') {
+    lv = Math.max(lv, 1);
+    items.push({ t: 'warn', m: '好公司偏弱（盈利质量 ' + fmt(sc.a1, 1) + '/15）→ 别把它当成核心仓' });
   }
 
   const WORD = ['继续拿着，不用动', '别加仓；有浮盈可减一部分', '考虑卖出'];
@@ -1948,10 +2009,14 @@ function finalizeScore(r, s) {
   if (!r) r = _emptyShell('打分失败');
   const exp = expensive(s);
   r.exp = exp;
-  r.cheap = exp.word;
-  r.cheapColor = exp.color;
-  r.cheapShort = exp.short;
-  r.cheapDetail = exp.detail;
+  if (!r.goodCo) r.goodCo = 'ok';   // 指数/ETF/场外不走个股门槛
+  /* 只补缺，不覆盖——score() 里可能已把"三门槛全过"改写成"假便宜"（不是好公司时） */
+  if (!r.cheap) {
+    r.cheap = exp.word;
+    r.cheapColor = exp.color;
+    r.cheapShort = exp.short;
+    r.cheapDetail = exp.detail;
+  }
   if (!r.sell) r.sell = sellAdvice(s, r, exp);
   return r;
 }
@@ -2178,6 +2243,11 @@ function renderCards() {
           <div style="font-size:10px;color:var(--muted2);text-align:right;letter-spacing:.5px">我的建议</div>
           <div class="verdict" style="color:${sc.vcolor};border-color:${sc.vcolor}44;background:${sc.vcolor}14">${sc.verdict}</div>
           <div class="cheap" style="color:${sc.cheapColor}" title="${sc.cheapDetail}">现在贵不贵：${sc.cheap}（${sc.cheapShort}）</div>
+          ${sc.goodCo === 'bad'
+            ? `<div class="goodco bad">好公司不合格 ${fmt(sc.dims.A.v,1)}/40 · 便宜也不买</div>`
+            : sc.goodCo === 'weak'
+            ? `<div class="goodco weak">好公司偏弱 ${fmt(sc.dims.A.v,1)}/40</div>`
+            : ''}
         </div>
       </div>
       <div class="card-body">
