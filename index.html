@@ -2107,8 +2107,9 @@ function buildReasons(s, sc) {
   if (s.profitYoy < -15) out.push({t:'bad', m:`<b>净利同比 ${fmt(s.profitYoy,1)}%</b>，这是最需要注意的一条：股息率高是因为股价跌，PE 高是因为分母在缩。分红能不能维持，要看年报，不看现在的股息率。`});
   else if (s.profitYoy > 5) out.push({m:`<b>净利同比 +${fmt(s.profitYoy,1)}%、营收 +${fmt(s.revYoy,1)}%</b>，盈利在扩张，分红有 underlying 支撑。`});
 
-  // 技术
-  if (s.rsi > 68) out.push({t:'warn', m:`<b>RSI ${s.rsi}${s.kdjJ>95?' · KDJ-J '+s.kdjJ:''}</b>，短线已进入偏热区。中长线不看这个，但它决定了你是"一次买"还是"分三次买"。`});
+  // 技术（超买超卖两头都要说，之前只有偏热这一头）
+  if (s.rsi > 68) out.push({t:'warn', m:`<b>RSI ${s.rsi}${s.kdjJ>95?' · KDJ-J '+s.kdjJ:''}</b>，短线已进入<b>偏热区</b>。中长线不看这个，但它决定了你是"一次买"还是"分三次买"。`});
+  else if (s.rsi < 30) out.push({t:'ok', m:`<b>RSI ${s.rsi}${s.kdjJ<0?' · KDJ-J '+s.kdjJ:''}</b>，短线<b>技术超卖</b>。注意它只说明"跌得急"，不等于"便宜"——能不能买还是要看分位和股息，别把超卖当买入理由。`});
   else if (s.price < s.ma250) out.push({m:`<b>价格 ${s.price} 在年线 ${s.ma250} 之下</b>，中期趋势尚未修复。左侧买入的代价是要等，好处是成本低。`});
   else out.push({m:`<b>价格在年线 ${s.ma250} 之上</b>，中期趋势向上，属于右侧。右侧买贵一点，但省时间。`});
 
@@ -2189,7 +2190,11 @@ const ROWS = [
   { k:'chip_p', n:'获利盘', f:s => fmt(s.chip?s.chip.profit:null,0)+'%', best:'min',
     sub:'越低越有安全垫', val:s=>s.chip?s.chip.profit:null },
   { k:'above', n:'上方套牢', f:s => fmt(s.chip?s.chip.above:null,0)+'%' },
-  { k:'rsi', n:'RSI14', f:s => fmt(s.rsi,1), sub:'>75 超买' },
+  { k:'rsi', n:'RSI14', f:s => fmt(s.rsi,1), val:s=>s.rsi, best:'min',
+    /* 以前这里写死 '>75 超买'，不管实际值多少都显示"超买"，超卖永远看不到。
+       改成按当前值给状态词，超买超卖都标。 */
+    sub:s => { const g = rsiTag(s.rsi);
+      return g.t ? '<span style="color:' + g.c + ';font-weight:600">' + g.t + '</span>' : ''; } },
   { k:'vol', n:'年化波动', f:s => fmt(s.volAnn,1)+'%' },
   { k:'cap', n:'总市值', f:s => fmt(s.marketCap,0)+'亿' },
 ];
