@@ -437,11 +437,14 @@ details[open] summary{margin-bottom:14px}
 
   <div class="sbox">
     <div class="sinput">
-      <input id="q" placeholder="输入已收录的 9 只之一：601988 / 中国银行 / 红利低波" autocomplete="off" spellcheck="false">
+      <input id="q" placeholder="搜任何 A 股 / ETF：输 6 位代码或名字，如 002594 或 比亚迪" autocomplete="off" spellcheck="false">
       <button id="go">分析</button>
     </div>
     <div class="sug" id="sug"></div>
     <div class="quick" id="quick"></div>
+    <div style="font-size:11px;color:var(--muted2);margin-top:8px;line-height:1.7">
+      沪深两市任何股票和场内 ETF 都能查，不限于下面这几只。直接输代码也行（如 002594），会当场联网抓行情、财报、分红再算分。
+    </div>
   </div>
 
   <div id="errbox"></div>
@@ -1388,7 +1391,7 @@ async function loadStock(code, opts) {
   code = String(code).trim();
   if (!/^\d{6}$/.test(code)) { showErr('代码必须是 6 位数字'); return; }
   if (STOCK_DATA.some(s => s.code === code)) {
-    selected.add(code); renderPicker(); render(); return;
+    selected.add(code); saveSel(); renderPicker(); render(); return;
   }
   if (LOADING[code]) return;
   LOADING[code] = true;
@@ -1399,7 +1402,7 @@ async function loadStock(code, opts) {
     STOCK_DATA.push(d);
     selected.add(code);
     showErr('');
-    saveList();
+    saveList(); saveSel();
   } catch (e) {
     showErr('取不到 <b>' + code + '</b> 的数据：' + e.message);
   } finally {
@@ -1408,6 +1411,31 @@ async function loadStock(code, opts) {
     renderPicker(); render(); renderExec();
   }
 }
+
+/* 刷新后把上次搜过的股票重新抓回来。
+   内置快照只有 12 只，搜过的不在内置表里，不恢复就会"搜了、加了、一刷新没了"。 */
+async function restoreStock(code) {
+  code = String(code).trim();
+  if (!/^\d{6}$/.test(code)) return false;
+  if (STOCK_DATA.some(s => String(s.code) === code)) return false;
+  if (LOADING[code]) return false;
+  LOADING[code] = true;
+  renderPicker();
+  try {
+    const j = await api('/api/analyze?code=' + encodeURIComponent(code));
+    if (!j || !j.data) return false;
+    if (!STOCK_DATA.some(s => String(s.code) === code)) STOCK_DATA.push(j.data);
+    if (_pendingSel && _pendingSel.has(code)) selected.add(code);
+    return true;
+  } catch (e) {
+    if (_pendingSel && _pendingSel.has(code)) _pendingSel.delete(code);
+    return false;
+  } finally {
+    delete LOADING[code];
+    renderPicker(); render(); renderExec();
+  }
+}
+let _pendingSel = null;
 
 function removeStock(code) {
   STOCK_DATA = STOCK_DATA.filter(s => s.code !== code);
@@ -2905,14 +2933,21 @@ function init() {
   const DEFAULT_CODES = ['601988', '601006', '000651'];
   selected.clear();
   const remembered = loadSel();
+  _pendingSel = new Set((remembered || []).map(String));
   const codes = (remembered && remembered.length) ? remembered
               : DEFAULT_CODES.filter(c => STOCK_DATA.some(s => String(s.code) === c));
   codes.forEach(c => { if (STOCK_DATA.some(s => String(s.code) === String(c))) selected.add(String(c)); });
-  if (!selected.size) selected.add(String(STOCK_DATA[0].code));
+  if (!selected.size && !_pendingSel.size) selected.add(String(STOCK_DATA[0].code));
   renderPicker(); renderTable(); renderCards(); renderBrief(); renderExec();
   document.getElementById('count').textContent = selected.size + ' / ' + STOCK_DATA.length + ' 只';
   /* 先把快照秒出，再整批抓最新价替换（这才是"实时版"该有的行为） */
   refreshAllLive(STOCK_DATA.map(function (x) { return String(x.code); }));
+
+  /* 把上次搜过的（不在内置快照里的）股票重新抓回来；错峰发，别一次打满 */
+  const miss = loadList().filter(c => !STOCK_DATA.some(s => String(s.code) === String(c)));
+  miss.slice(0, 10).forEach(function (c, i) {
+    setTimeout(function () { restoreStock(c); }, 200 + i * 420);
+  });
 }
 
 document.addEventListener('DOMContentLoaded', init);
