@@ -85,6 +85,33 @@ header{
 .tbl-wrap::-webkit-scrollbar-corner{background:transparent}
 /* 必须 separate：collapse 模式下 sticky 表头的边框会跟着滚走 */
 table{border-collapse:separate;border-spacing:0;width:100%;font-size:13px;min-width:660px}
+
+/* ---- 手机端排版：手机上一屏看得到结论，对比表收起不占地 ---- */
+.tbl-toggle{display:none}
+@media(max-width:720px){
+  /* 20 行指标 × N 列在手机上要横滑很久，默认收起，想看再点开 */
+  .tbl-toggle{
+    display:block;width:100%;margin:0 0 10px;padding:10px;border-radius:9px;
+    background:var(--panel2);border:1px solid var(--line2);color:var(--muted);
+    font-size:12.5px;cursor:pointer;
+  }
+  .tbl-wrap.hide{display:none}
+  /* 收起横向滚动：列宽自适应，不再强制 660px */
+  table{min-width:0;font-size:12px}
+  thead th,td{padding-left:7px;padding-right:7px}
+  .grid{grid-template-columns:repeat(2,1fr)}
+  .card-body{grid-template-columns:1fr}
+  .col-l,.col-r{padding:16px}
+  .buy-big{font-size:32px}
+  .px .v{font-size:18px}
+  .card-hd{flex-wrap:wrap;gap:8px}
+  .card-hd .right{align-items:flex-start !important;margin-left:0;width:100%}
+  .cheap{white-space:normal;text-align:left}
+  .buyline .c{padding:8px 6px}
+  .buyline .c .r{font-size:9.5px}
+  .buyline .c .p{font-size:13px}
+  .trig,.sell,.reason{padding:12px 13px}
+}
 th,td{padding:11px 15px;text-align:right;border-bottom:1px solid var(--line)}
 /* 首列（指标名）横向冻结 */
 th:first-child,td:first-child{text-align:left;position:sticky;left:0;background:var(--panel);z-index:2}
@@ -407,16 +434,17 @@ details[open] summary{margin-bottom:14px}
   <div class="picker" id="picker"></div>
 
   <div class="sect-title">
-    <h2>横向对比</h2><div class="ln"></div>
-    <span class="note">金色 = 该行最优 · 随输入实时更新</span>
-  </div>
-  <div class="tbl-wrap"><table id="cmp"></table></div>
-
-  <div class="sect-title">
     <h2>一句话结论</h2><div class="ln"></div>
     <span class="note">每只卡在哪，各不相同</span>
   </div>
   <div class="brief brief-dyn" id="brief"></div>
+
+  <div class="sect-title">
+    <h2>横向对比</h2><div class="ln"></div>
+    <span class="note">金色 = 该行最优 · 手机可点开</span>
+  </div>
+  <button class="tbl-toggle" id="tblToggle" type="button">展开对比表</button>
+  <div class="tbl-wrap" id="tblWrap"><table id="cmp"></table></div>
 
   <div class="sect-title">
     <h2>逐项拆解</h2><div class="ln"></div>
@@ -1380,6 +1408,14 @@ function saveList() {
 function loadList() {
   try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch (e) { return []; }
 }
+/* 记住勾了哪几只——下次打开还是自己选的那几只，不用重新点 */
+const SEL_KEY = 'ldx_radar_sel_v1';
+function saveSel() {
+  try { localStorage.setItem(SEL_KEY, JSON.stringify(Array.from(selected))); } catch (e) {}
+}
+function loadSel() {
+  try { return JSON.parse(localStorage.getItem(SEL_KEY) || 'null'); } catch (e) { return null; }
+}
 
 /* ============ 打分引擎（沿用模板） ============ */
 /* ============ 打分引擎 ============ */
@@ -1651,11 +1687,15 @@ function expensive(s) {
 function sellAdvice(s, sc, exp) {
   const items = [];
   let lv = 0;
+  const isIdx = !!(s.isFund || s.isIndexVal || s.isOTC);
+  const total = (sc && typeof sc.total === 'number' && !isNaN(sc.total)) ? sc.total : null;
 
   /* A 分红 */
   const dy = s.divYield || 0, py = (s.profitYoy == null ? 0 : s.profitYoy), pay = s.payout || 0;
   const finLike = !!s.isFinancial || FIN_CODES.has(String(s.code));
-  if (finLike && py < -15) {
+  if (isIdx) {
+    items.push({ t: 'ok', m: '指数/基金没有"公司砍分红"这回事，分红断供这一条不适用（ETF 分红随成分股走）' });
+  } else if (finLike && py < -15) {
     /* 金融股单期利润受投资收益、准备金折现率、拨备节奏影响，
        -20% 多半是会计口径不是经营恶化，不当作分红断供信号（与打分逻辑保持一致）。 */
     items.push({ t: 'warn', m: '净利 ' + fmt(py, 1) + '%——金融股这个数看会计口径，不等于分红要砍；真正要看的是支付率 ' + fmt(pay, 0) + '%' + (pay < 50 ? '（有余力）' : '') });
@@ -1690,14 +1730,16 @@ function sellAdvice(s, sc, exp) {
   }
 
   /* C 综合分 */
-  if (sc.total < 35) {
+  if (total === null) {
+    items.push({ t: 'ok', m: '这只没有个股综合分（走分位口径），所以不看分数，只看上面的位置' });
+  } else if (total < 35) {
     lv = 2;
-    items.push({ t: 'bad', m: '综合分 ' + fmt(sc.total, 1) + '（低于 35 档）→ 这套标准下它已经不合格' });
-  } else if (sc.total < 48) {
+    items.push({ t: 'bad', m: '综合分 ' + fmt(total, 1) + '（低于 35 档）→ 这套标准下它已经不合格' });
+  } else if (total < 48) {
     lv = Math.max(lv, 1);
-    items.push({ t: 'warn', m: '综合分 ' + fmt(sc.total, 1) + '（35–48 档）→ 已持有的该减，没持有的别进' });
+    items.push({ t: 'warn', m: '综合分 ' + fmt(total, 1) + '（35–48 档）→ 已持有的该减，没持有的别进' });
   } else {
-    items.push({ t: 'ok', m: '综合分 ' + fmt(sc.total, 1) + '（48 分以上）→ 还站得住' });
+    items.push({ t: 'ok', m: '综合分 ' + fmt(total, 1) + '（48 分以上）→ 还站得住' });
   }
 
   const WORD = ['继续拿着，不用动', '别加仓；有浮盈可减一部分', '考虑卖出'];
@@ -1857,6 +1899,21 @@ function scoreIndex(s) {
            verdict, vcolor, kind: 'fund', trap: null, chase: null };
 }
 
+/* 三条打分路径（个股 / 指数ETF / 场外基金）返回结构不同。
+   "贵不贵"和"什么时候卖"对三条路径都要有，所以在这里统一补齐——
+   不要再让模板去猜某个分数对象有没有 sell 字段（那就是这页白屏崩掉的原因）。 */
+function finalizeScore(r, s) {
+  if (!r) r = _emptyShell('打分失败');
+  const exp = expensive(s);
+  r.exp = exp;
+  r.cheap = exp.word;
+  r.cheapColor = exp.color;
+  r.cheapShort = exp.short;
+  r.cheapDetail = exp.detail;
+  if (!r.sell) r.sell = sellAdvice(s, r, exp);
+  return r;
+}
+
 const _scoreStock = score;
 function _emptyShell(txt) {
   return {
@@ -1871,10 +1928,19 @@ function _emptyShell(txt) {
   };
 }
 score = function(s) {
-  if (s && s.isIndexVal) return scoreIndex(s);
-  if (s && s.isOTC) return _emptyShell('场外基金 · 个股打分不适用');
-  if (s && s.isFund) return _emptyShell('ETF · 标的指数估值未入库');
-  return _scoreStock(s);
+  var r;
+  try {
+    /* 缺基础字段的（行情没抓到、chip 缺失）直接给壳，
+       不让任何一条路径因为 undefined.toFixed 把整页打崩 */
+    if (!s || s.price == null || !s.chip) r = _emptyShell('行情数据不全，暂不评分');
+    else if (s.isIndexVal) r = scoreIndex(s);
+    else if (s.isOTC) r = _emptyShell('场外基金 · 个股打分不适用');
+    else if (s.isFund) r = _emptyShell('ETF · 标的指数估值未入库');
+    else r = _scoreStock(s);
+  } catch (e) {
+    r = _emptyShell('这只算不出来：' + (e && e.message ? e.message : '未知错误'));
+  }
+  return finalizeScore(r, s);
 };
 
 
@@ -2273,7 +2339,8 @@ function buildReasons(s, sc) {
 /* ============ 选择器 ============ */
 function renderPicker() {
   const el = document.getElementById('picker');
-  document.getElementById('count').textContent = STOCK_DATA.length + ' 只';
+  document.getElementById('count').textContent =
+    selected.size + ' / ' + STOCK_DATA.length + ' 只';
   let html = STOCK_DATA.map(s => `
     <div class="chip ${selected.has(s.code) ? 'on' : ''}" data-code="${s.code}">
       <span class="tick"></span>${s.name}
@@ -2293,6 +2360,7 @@ function renderPicker() {
     const c2 = c.dataset.code;
     if (!c2) return;
     selected.has(c2) ? selected.delete(c2) : selected.add(c2);
+    saveSel();
     renderPicker(); render();
   });
   el.querySelectorAll('.x').forEach(x => x.onclick = e => {
@@ -2304,12 +2372,13 @@ function renderPicker() {
   if (sa) sa.onclick = () => {
     if (selected.size === STOCK_DATA.length) selected.clear();
     else STOCK_DATA.forEach(s => selected.add(s.code));
+    saveSel();
     renderPicker(); render();
   };
   const cl = document.getElementById('clr');
   if (cl) cl.onclick = () => {
     STOCK_DATA = []; selected.clear(); execCur = '';
-    saveList(); renderPicker(); render(); renderExec();
+    saveList(); saveSel(); renderPicker(); render(); renderExec();
   };
 }
 
@@ -2699,9 +2768,30 @@ function initSearch() {
 /* ============ 启动 ============ */
 const BODY_RENDER = () => { renderTable(); renderCards(); renderBrief(); };
 
+/* 手机上对比表默认收起：20 行指标横滑太远，先让人看到结论 */
+function initTableToggle() {
+  const btn = document.getElementById('tblToggle');
+  const wrap = document.getElementById('tblWrap');
+  if (!btn || !wrap) return;
+  const isPhone = () => window.matchMedia && window.matchMedia('(max-width:720px)').matches;
+  wrap.classList.toggle('hide', isPhone());
+  const paint = () => {
+    btn.textContent = wrap.classList.contains('hide') ? '展开对比表（20 项指标）' : '收起对比表';
+  };
+  paint();
+  btn.onclick = () => { wrap.classList.toggle('hide'); paint(); };
+  /* 横竖屏切换时同步：转成电脑宽屏就把表放出来，转回手机再收起 */
+  let lastPhone = isPhone();
+  window.addEventListener('resize', () => {
+    const now = isPhone();
+    if (now !== lastPhone) { wrap.classList.toggle('hide', now); paint(); lastPhone = now; }
+  });
+}
+
 function init() {
   renderQuick();
   initSearch();
+  initTableToggle();
   renderPicker(); renderTable(); renderCards(); renderBrief(); renderExec();
   stampNow();
 
@@ -2711,10 +2801,17 @@ function init() {
     const sn = document.getElementById('snapnames');
     if (sn) sn.textContent = SNAP_DATA.map(function (x) { return x.name; }).join('、');
   })();
+  /* 默认只放 3 只（自己最常看的），不要再全选 12 只——
+     一路滑下去看不完，进来第一步就应该是搜索框。其余随时可点选或搜代码加。 */
+  const DEFAULT_CODES = ['601988', '601006', '000651'];
   selected.clear();
-  STOCK_DATA.forEach(s => selected.add(String(s.code)));
+  const remembered = loadSel();
+  const codes = (remembered && remembered.length) ? remembered
+              : DEFAULT_CODES.filter(c => STOCK_DATA.some(s => String(s.code) === c));
+  codes.forEach(c => { if (STOCK_DATA.some(s => String(s.code) === String(c))) selected.add(String(c)); });
+  if (!selected.size) selected.add(String(STOCK_DATA[0].code));
   renderPicker(); renderTable(); renderCards(); renderBrief(); renderExec();
-  document.getElementById('count').textContent = STOCK_DATA.length + ' 只';
+  document.getElementById('count').textContent = selected.size + ' / ' + STOCK_DATA.length + ' 只';
   /* 先把快照秒出，再整批抓最新价替换（这才是"实时版"该有的行为） */
   refreshAllLive(STOCK_DATA.map(function (x) { return String(x.code); }));
 }
