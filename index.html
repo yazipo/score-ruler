@@ -211,6 +211,18 @@ td .sub{margin-top:1px}
 .buyline .c .p{font-size:14px;font-weight:600;margin-top:2px}
 .buyline .c .d{font-size:10px;color:var(--muted2);margin-top:1px}
 .cheap{font-size:11.5px;font-weight:600;white-space:nowrap}
+/* 什么时候卖 */
+.sell{margin-top:13px;border:1px solid var(--line2);border-radius:10px;padding:13px 16px;
+  background:rgba(120,140,170,.05)}
+.sell .th{font-size:11.5px;color:var(--muted);letter-spacing:.5px;margin-bottom:7px}
+.sell .sm{font-size:14px;font-weight:600;margin-bottom:9px}
+.sell ul{list-style:none;display:flex;flex-direction:column;gap:6px}
+.sell li{font-size:12px;line-height:1.6;color:#cdd5e1;padding-left:17px;position:relative}
+.sell li::before{position:absolute;left:0;top:0;font-size:12px}
+.sell li.ok::before{content:"✓";color:var(--green2,#3fa87a)}
+.sell li.warn::before{content:"!";color:var(--orange);font-weight:700}
+.sell li.bad::before{content:"×";color:var(--green);font-weight:700}
+.sell li.ok{color:#9aa5b5}
 .trig-note{font-size:12px;color:#cdd5e1;line-height:1.65;margin-bottom:2px}
 .trig-note b{color:var(--gold)}
 .trig-foot{font-size:10.5px;color:var(--muted2);margin-top:7px}
@@ -441,7 +453,17 @@ details[open] summary{margin-bottom:14px}
       <b>分数 → 我的建议</b>　<code>≥75</code> 建议买　·　<code>62–75</code> 可以分批买　·　<code>48–62</code> 已买就拿着，没买先等等　·　<code>35–48</code> 先别买（已买可减）　·　<code>&lt;35</code> 不建议买<br>
       <b>分数 → 我的建议（ETF / 基金，走标的指数）</b>　<code>≥75</code> 建议加投　·　<code>55–75</code> 可以定投　·　<code>38–55</code> 已投就拿着　·　<code>22–38</code> 先别投（已投可减）　·　<code>&lt;22</code> 不建议投。
       基金档位更宽，因为默认处在长期定投中，中性区间的动作是 "按计划继续"，不是停手。<br>
-      <b>结论只回答方向，不给金额、不给档位表。</b>
+      <b>结论只回答方向，不给金额、不给档位表。</b><br><br>
+      <b style="color:var(--gold)">「现在贵不贵」五档怎么算</b>　两把尺子同时量，<b>取更贵的那个</b>：<br>
+      ① <b>估值门槛</b>：PE&lt;10、PB&lt;1、股息率≥4%，过 3 条→便宜，2 条→不算贵，1 条→偏贵，0 条→很贵；PE≥30 直接算很贵。<br>
+      ② <b>价格位置</b>：52 周分位 ≤20%→很便宜，≤40%→便宜，≤65%→不算贵，≤90%→偏贵，&gt;90%→很贵。<br>
+      为什么要两把尺子：一只票站在一年最高点，PE、PB 可能依旧达标，只看估值会把它说成"不算贵"——
+      <b>93% 分位就是很贵，不管 PE 多低</b>。指数/ETF 只按分位判，因为沪深300 的 PE 永远大于 10，套个股门槛没有意义。<br><br>
+      <b style="color:var(--gold)">「什么时候卖」三条件</b>　攒股收息的钱来自分红，所以卖出只看这三条，<b>不看涨了多少</b>：<br>
+      ① <b>分红撑不住</b>（最硬）：净利 &lt;−20% 且股息率 &gt;4%（高息是跌出来的），或支付率 &gt;90% → 考虑卖出。金融股单期利润受会计口径影响，不据此判死。<br>
+      ② <b>贵到不该持有</b>：位置 &gt;95% 且三门槛基本不过 → 考虑卖出；只是「很贵」则提示不该加仓，不等于必须清。<br>
+      ③ <b>综合分跌破</b>：&lt;35 → 考虑卖出；35–48 → 该减不该加。<br>
+      三条取最高档。给的是「继续拿着 / 别加仓，有浮盈可减 / 考虑卖出」三档，并逐条列出依据——哪条触发了、哪条还安全，都能对回去。
     </div>
   </details>
 
@@ -1564,13 +1586,9 @@ function score(s) {
     else if (verdict === '可以分批买') { verdict = '已买就拿着，没买先等等'; vcolor = 'var(--muted)'; }
   }
 
-  /* ---- 现在贵不贵（李大霄三门槛） ---- */
-  const pass3 = (s.pe > 0 && s.pe < 10 ? 1 : 0) + (s.pb < 1 ? 1 : 0) + (s.divYield >= 4 ? 1 : 0);
-  let cheap, cheapColor;
-  if (pass3 >= 3)      { cheap = '便宜（三门槛全过）'; cheapColor = 'var(--red)'; }
-  else if (pass3 === 2){ cheap = '不算贵（部分达标）'; cheapColor = 'var(--orange)'; }
-  else if (pass3 === 1){ cheap = '偏贵（仅一项达标）'; cheapColor = 'var(--muted)'; }
-  else                 { cheap = '不便宜（靠成长/趋势定价）'; cheapColor = 'var(--green)'; }
+  /* ---- 现在贵不贵：估值 + 位置，取更贵的那个 ---- */
+  const exp = expensive(s);
+  const cheap = exp.word, cheapColor = exp.color, cheapShort = exp.short, cheapDetail = exp.detail;
 
   dims = {
     A: { v:A, max:40, label:'好公司', color:'var(--gold)' },
@@ -1579,7 +1597,112 @@ function score(s) {
     D: { v:D, max:10, label:'技术面', color:'var(--green)' }
   };
 
-  return { total, raw: Math.round(raw*10)/10, dims, detail:d, flags, verdict, vcolor, cheap, cheapColor, trap, chase };
+  const sell = sellAdvice(s, { total, verdict, vcolor }, exp);
+
+  return { total, raw: Math.round(raw*10)/10, dims, detail:d, flags, verdict, vcolor,
+           cheap, cheapColor, cheapShort, cheapDetail, sell, exp, trap, chase };
+}
+
+/* ---- 贵不贵：估值门槛 + 价格位置，两把尺子取"更贵"的那个 ----
+   只看 PE/PB/股息率会出错：一只票在一年最高点，只要 PE、PB 达标就显示"不算贵"。
+   位置单独也说话：93% 分位就是很贵，不管 PE 多低。 */
+const EXP_WORD = ['', '很便宜', '便宜', '不算贵', '偏贵', '很贵'];
+const EXP_COLOR = ['', 'var(--red)', 'var(--red)', 'var(--orange)', 'var(--muted)', 'var(--green)'];
+
+function expensive(s) {
+  const isIdx = !!(s.isFund || s.isIndexVal || s.isOTC);
+  const p = (s.pos52 == null) ? 50 : s.pos52;
+  const posLv = p <= 20 ? 1 : p <= 40 ? 2 : p <= 65 ? 3 : p <= 90 ? 4 : 5;
+
+  let valLv = 0, passN = null;
+  if (isIdx) {
+    valLv = 0;                      // 指数不套个股绝对门槛（沪深300 的 PE 永远 >10）
+  } else if (!s.pe || s.pe <= 0) {
+    valLv = 3;                      // PE 缺值，不当成便宜也不当成贵
+  } else if (s.pe >= 30) {
+    valLv = 5;                      // PE 30 以上，任何标准下都算贵
+  } else {
+    passN = (s.pe < 10 ? 1 : 0) + ((s.pb && s.pb < 1) ? 1 : 0) + ((s.divYield || 0) >= 4 ? 1 : 0);
+    valLv = passN === 3 ? 2 : passN === 2 ? 3 : passN === 1 ? 4 : 5;
+  }
+
+  const lv = Math.max(valLv, posLv);
+  /* 下标说明：哪个更贵就说哪个，让结论有依据可查 */
+  let short, detail;
+  if (isIdx) {
+    short = '近一年 ' + p.toFixed(0) + '% 分位';
+    detail = '指数/基金按历史分位判，不套个股的 PE<10 门槛';
+  } else if (posLv >= valLv) {
+    short = '位置 ' + p.toFixed(0) + '%，' + (p > 90 ? '一年最高区' : p > 65 ? '一年偏高' : p > 40 ? '一年中位' : '一年低位');
+    detail = '价格位置决定：' + p.toFixed(0) + '% 分位；估值侧三门槛过 ' + (passN == null ? '—' : passN + '/3');
+  } else {
+    short = '三门槛只过 ' + (passN == null ? '—' : passN + '/3');
+    detail = '估值门槛没到位（PE ' + fmt(s.pe, 1) + ' / PB ' + fmt(s.pb, 2) + ' / 股息率 ' + fmt(s.divYield, 2) + '%），位置 ' + p.toFixed(0) + '%';
+  }
+  return { lv, word: EXP_WORD[lv], color: EXP_COLOR[lv], short, detail, posLv, valLv, passN };
+}
+
+/* ---- 什么时候卖 ----
+   攒股收息的钱来自分红，所以卖出只看三件事，不看涨了多少：
+     A 分红撑不住（最硬的一条，跟股价无关）
+     B 贵到不该继续持有
+     C 综合分已经跌到"不建议买"
+   三路取最高。不预设"涨多少就卖"——那是价差交易的尺子。 */
+function sellAdvice(s, sc, exp) {
+  const items = [];
+  let lv = 0;
+
+  /* A 分红 */
+  const dy = s.divYield || 0, py = (s.profitYoy == null ? 0 : s.profitYoy), pay = s.payout || 0;
+  const finLike = !!s.isFinancial || FIN_CODES.has(String(s.code));
+  if (finLike && py < -15) {
+    /* 金融股单期利润受投资收益、准备金折现率、拨备节奏影响，
+       -20% 多半是会计口径不是经营恶化，不当作分红断供信号（与打分逻辑保持一致）。 */
+    items.push({ t: 'warn', m: '净利 ' + fmt(py, 1) + '%——金融股这个数看会计口径，不等于分红要砍；真正要看的是支付率 ' + fmt(pay, 0) + '%' + (pay < 50 ? '（有余力）' : '') });
+  } else if (dy > 4 && py < -20) {
+    lv = 2;
+    items.push({ t: 'bad', m: '净利 ' + fmt(py, 1) + '%，高股息是跌出来的 → 分红大概率下调，这条比价格重要' });
+  } else if (pay > 90) {
+    lv = 2;
+    items.push({ t: 'bad', m: '支付率 ' + fmt(pay, 0) + '%，分红超过利润，撑不了几年' });
+  } else if (dy > 4 && py < -15) {
+    lv = Math.max(lv, 1);
+    items.push({ t: 'warn', m: '净利 ' + fmt(py, 1) + '%，股息率 ' + fmt(dy, 2) + '% 有被砍的风险 → 盯下一次年报分红预案，这是它最大的变量' });
+  } else if (py < -15) {
+    lv = Math.max(lv, 1);
+    items.push({ t: 'warn', m: '净利 ' + fmt(py, 1) + '%，还没到断供，但要盯下一次年报的分红预案' });
+  } else {
+    items.push({ t: 'ok', m: '分红暂无断供迹象（净利 ' + fmt(py, 1) + '%、支付率 ' + fmt(pay, 0) + '%）' });
+  }
+
+  /* B 贵不贵 */
+  if (exp.lv >= 5 && (s.pos52 || 0) > 95 && (exp.passN != null && exp.passN <= 1)) {
+    lv = 2;
+    items.push({ t: 'bad', m: '位置 ' + fmt(s.pos52, 0) + '%（一年最高）且估值门槛基本不过 → 持有它没有理由了' });
+  } else if (exp.lv >= 5) {
+    lv = Math.max(lv, 1);
+    items.push({ t: 'warn', m: '已经很贵（' + exp.short + '）→ 不该再加，有浮盈可考虑减一部分' });
+  } else if (exp.lv === 4) {
+    lv = Math.max(lv, 1);
+    items.push({ t: 'warn', m: '偏贵（' + exp.short + '）→ 别在这个位置加仓' });
+  } else {
+    items.push({ t: 'ok', m: '价格不算贵（' + exp.short + '）' });
+  }
+
+  /* C 综合分 */
+  if (sc.total < 35) {
+    lv = 2;
+    items.push({ t: 'bad', m: '综合分 ' + fmt(sc.total, 1) + '（低于 35 档）→ 这套标准下它已经不合格' });
+  } else if (sc.total < 48) {
+    lv = Math.max(lv, 1);
+    items.push({ t: 'warn', m: '综合分 ' + fmt(sc.total, 1) + '（35–48 档）→ 已持有的该减，没持有的别进' });
+  } else {
+    items.push({ t: 'ok', m: '综合分 ' + fmt(sc.total, 1) + '（48 分以上）→ 还站得住' });
+  }
+
+  const WORD = ['继续拿着，不用动', '别加仓；有浮盈可减一部分', '考虑卖出'];
+  const COLOR = ['var(--red)', 'var(--orange)', 'var(--green)'];
+  return { lv, word: WORD[lv], color: COLOR[lv], items };
 }
 
 /* ---- 股息率反推买价 ---- */
@@ -1946,7 +2069,7 @@ function renderCards() {
         <div class="right" style="flex-direction:column;align-items:flex-end;gap:5px">
           <div style="font-size:10px;color:var(--muted2);text-align:right;letter-spacing:.5px">我的建议</div>
           <div class="verdict" style="color:${sc.vcolor};border-color:${sc.vcolor}44;background:${sc.vcolor}14">${sc.verdict}</div>
-          <div class="cheap" style="color:${sc.cheapColor}">现在贵不贵：${sc.cheap}</div>
+          <div class="cheap" style="color:${sc.cheapColor}" title="${sc.cheapDetail}">现在贵不贵：${sc.cheap}（${sc.cheapShort}）</div>
         </div>
       </div>
       <div class="card-body">
@@ -2007,6 +2130,12 @@ function renderCards() {
             <div class="rh">判读</div>
             <ul>${reasons.map(r => `<li class="${r.t||''}">${r.m}</li>`).join('')}</ul>
             ${flagHtml ? `<div style="margin-top:10px">${flagHtml}</div>` : ''}
+          </div>
+
+          <div class="sell">
+            <div class="th">什么时候卖 · 有持仓才看</div>
+            <div class="sm" style="color:${sc.sell.color}">${sc.sell.word}</div>
+            <ul>${sc.sell.items.map(i => `<li class="${i.t}">${i.m}</li>`).join('')}</ul>
           </div>
 
           <div class="trig">
