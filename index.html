@@ -1206,7 +1206,7 @@ const LIVE = (function () {
 /* 内置快照先出结果（毫秒级），同时后台抓最新的替换掉；快照没收录的代码直接实时抓。 */
 /* ==== LIVE-INIT-PATCH ==== */
 const _refreshing = new Set();
-const _live = { total: 0, done: 0, fail: 0, running: false };
+const _live = { total: 0, done: 0, fail: 0, running: false, lastErr: '' };
 
 function updateStamp() {
   const el = document.getElementById('stamp');
@@ -1219,9 +1219,10 @@ function updateStamp() {
   if (fin < _live.total) {
     el.textContent = '正在抓最新 ' + fin + '/' + _live.total;
   } else if (_live.done === 0) {
-    el.textContent = '联网失败 · 用快照 ' + SNAP_AT;
+    el.textContent = '联网失败' + (_live.lastErr ? '（' + _live.lastErr + '）' : '') + ' · 用快照 ' + SNAP_AT;
   } else {
-    el.textContent = '实时 · ' + _live.done + ' 只已更新 · ' + hhmm;
+    el.textContent = '实时 · ' + _live.done + ' 只已更新 · ' + hhmm
+      + (_live.fail ? ' · ' + _live.fail + ' 只失败' : '');
   }
 }
 
@@ -1242,8 +1243,9 @@ function refreshInBackground(code) {
   }).then(function (good) {
     if (good) _live.done++; else _live.fail++;
     return good;
-  }).catch(function () {
+  }).catch(function (e) {
     _live.fail++;
+    if (!_live.lastErr) _live.lastErr = (e && e.message ? e.message : '未知错误') + ' @' + code;
     return false;
   }).then(function (r) {
     _refreshing.delete(code);
@@ -1863,36 +1865,42 @@ function buyMeter(s) {
   }
   const dy = s.divYield;
   if (!dy || dy <= 0 || !s.price) {
-    return { big: '—', color: '#5f6b7d', pill: '无股息口径', k: '买点尺',
+    return { big: '—', color: '#5f6b7d', pill: '无股息口径', k: '股息率（门槛 4%）',
       sub: '这只没有可用的每股分红，算不出买点。',
       pos: 50, line: 50, l: '', r: '', sortKey: 0 };
   }
-  const t4 = s.price * dy / 4;
-  const gap = (t4 / s.price - 1) * 100;
+  const t4 = s.price * dy / 4;          // 股息率刚好 4% 时对应的价格（门槛价）
   const dPrice = Math.abs(s.price - t4);
+  const toGo = (s.price / t4 - 1) * 100; // 离门槛价还差几个点（正=还得跌）
+  const fold = (40 / dy);               // 现价相当于门槛价的几折（dy=8% → 5.0 折）
+
+  /* 结论：直接用股息率说事，不再显示"距买点 +93%"这种没有方向的余量 */
   let color, pill;
-  if (gap >= 10) { color = '#3fa87a'; pill = '已在买点内'; }
-  else if (gap >= 0) { color = '#3fa87a'; pill = '刚过买点线'; }
-  else if (gap >= -8) { color = '#dd9a3f'; pill = '差一点点'; }
-  else { color = '#8894a8'; pill = '还没到'; }
+  if (dy >= 5)        { color = '#3fa87a'; pill = '很划算（远超 4%）'; }
+  else if (dy >= 4)   { color = '#3fa87a'; pill = '够了（已过 4%）'; }
+  else if (dy >= 3.5) { color = '#dd9a3f'; pill = '差一点（不到 4%）'; }
+  else                { color = '#8894a8'; pill = '不够（离 4% 还远）'; }
+
   const warn = (s.payout > 90)
-    ? '　支付率 ' + fmt(s.payout,0) + '%，分红超过净利，这个股息率不可持续，余量要打折看。'
+    ? '　但支付率 ' + fmt(s.payout,0) + '%，分红超过净利，这个股息率不可持续，别当便宜看。'
     : '';
-  /* 股息率离 4% 太远时（比如 10%），"余量 +160%"这种数字没有信息量，
-     反而像在说"打六折"。改成封顶显示，把真实倍数放进说明里。 */
-  const shown = gap > 50 ? '>+50%' : ((gap >= 0 ? '+' : '') + gap.toFixed(1) + '%');
+  const sub = (dy >= 4
+      ? '现价 ' + fmt(s.price,2) + '，每年分红回报 ' + dy.toFixed(2) + '%，相当于门槛价 '
+        + fmt(t4,2) + ' 打 ' + fold.toFixed(1) + ' 折。'
+      : '现价 ' + fmt(s.price,2) + '，股息率只有 ' + dy.toFixed(2) + '%；要跌到 '
+        + fmt(t4,2) + '（再跌 ' + toGo.toFixed(1) + '%）才够 4%。')
+    + warn;
+
+  /* 进度条：50 的位置正好是"股息率=4%"。右=超门槛（便宜），左=不足（贵） */
+  const pos = Math.max(2, Math.min(98, 50 + (dy / 4 - 1) * 50));
   return {
-    big: shown, color, pill,
-    k: '距买点　4% 股息率',
-    sub: (gap >= 0
-        ? '现价 ' + fmt(s.price,2) + '，股息率 ' + dy.toFixed(2) + '% 是 4% 门槛的 '
-          + (dy / 4).toFixed(1) + ' 倍'
-        : '现价 ' + fmt(s.price,2) + '，要跌 ' + dPrice.toFixed(2) + ' 元到 ' + t4.toFixed(2) + ' 才达标')
-      + warn,
-    pos: Math.max(2, Math.min(98, (Math.max(-30, Math.min(30, gap)) + 30) / 60 * 100)),
+    big: dy.toFixed(2) + '%', color, pill,
+    k: '股息率　门槛 4%',
+    sub: sub,
+    pos: pos,
     line: 50,
-    l: '贵 30%', r: '便宜 30%',
-    sortKey: (gap >= 0 ? 100 + Math.min(gap, 30) : 80 + Math.max(gap, -40))
+    l: '贵（不足 4%）', r: '便宜（超 4%）',
+    sortKey: dy * 10
   };
 }
 
@@ -1931,8 +1939,10 @@ function renderCards() {
       <div class="card-accent" style="background:${sc.vcolor}"></div>
       <div class="card-hd">
         <div class="nm">${s.name}<span class="cd">${s.code} · ${s.sector}</span></div>
-        <div class="px"><span class="v mono">${fmt(s.price,2)}</span>
-          <span class="ch ${chgCls} mono">${s.change>=0?'+':''}${fmt(s.change,2)}%</span></div>
+        <div class="px"><span style="font-size:10px;color:var(--muted2);align-self:center;letter-spacing:.5px">现价</span>
+          <span class="v mono">${fmt(s.price,2)}</span>
+          <span class="ch ${chgCls} mono">${s.change>=0?'+':''}${fmt(s.change,2)}%</span>
+          <span style="font-size:10px;color:var(--muted2);align-self:center">${fmtQTime(s)}</span></div>
         <div class="right" style="flex-direction:column;align-items:flex-end;gap:5px">
           <div style="font-size:10px;color:var(--muted2);text-align:right;letter-spacing:.5px">我的建议</div>
           <div class="verdict" style="color:${sc.vcolor};border-color:${sc.vcolor}44;background:${sc.vcolor}14">${sc.verdict}</div>
