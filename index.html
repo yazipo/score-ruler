@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>做好人买好股 · 打分尺（公开快照版 2026-10-30）</title>
+<title>做好人买好股 · 打分尺（实时版）</title>
 <style>
 :root{
   --bg:#0c0e12; --panel:#141821; --panel2:#1a1f2a; --panel3:#20262f;
@@ -1153,19 +1153,65 @@ const LIVE = (function () {
 
 
 /* 内置快照先出结果（毫秒级），同时后台抓最新的替换掉；快照没收录的代码直接实时抓。 */
+/* ==== LIVE-INIT-PATCH ==== */
 const _refreshing = new Set();
+const _live = { total: 0, done: 0, fail: 0, running: false };
+
+function updateStamp() {
+  const el = document.getElementById('stamp');
+  if (!el) return;
+  const p = n => String(n).padStart(2, '0');
+  const d = new Date();
+  const hhmm = p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  if (!_live.total) { el.textContent = '快照 ' + SNAP_AT; return; }
+  const fin = _live.done + _live.fail;
+  if (fin < _live.total) {
+    el.textContent = '正在抓最新 ' + fin + '/' + _live.total;
+  } else if (_live.done === 0) {
+    el.textContent = '联网失败 · 用快照 ' + SNAP_AT;
+  } else {
+    el.textContent = '实时 · ' + _live.done + ' 只已更新 · ' + hhmm;
+  }
+}
+
 function refreshInBackground(code) {
-  if (_refreshing.has(code)) return;
+  code = String(code);
+  if (_refreshing.has(code)) return Promise.resolve(false);
   _refreshing.add(code);
-  LIVE.analyze(code).then(function (fresh) {
-    const i = STOCK_DATA.findIndex(function (x) { return String(x.code) === String(code); });
-    if (i >= 0 && fresh) {
+  return LIVE.analyze(code).then(function (fresh) {
+    const i = STOCK_DATA.findIndex(function (x) { return String(x.code) === code; });
+    if (fresh && i >= 0) {
       fresh.held = STOCK_DATA[i].held;
       STOCK_DATA[i] = fresh;
       if (typeof render === 'function') render();
       if (typeof renderPicker === 'function') renderPicker();
+      return true;
     }
-  }).catch(function () { /* 抓不到就继续用快照，不打扰 */ });
+    return false;
+  }).then(function (good) {
+    if (good) _live.done++; else _live.fail++;
+    return good;
+  }).catch(function () {
+    _live.fail++;
+    return false;
+  }).then(function (r) {
+    _refreshing.delete(code);
+    updateStamp();
+    return r;
+  });
+}
+
+/* 整批刷新：错峰发请求，逐只替换，页面边刷边变新 */
+function refreshAllLive(codes, manual) {
+  codes = (codes || []).map(String);
+  if (!codes.length) return;
+  if (manual) { _live.done = 0; _live.fail = 0; }
+  _live.total = codes.length;
+  _live.running = true;
+  updateStamp();
+  codes.forEach(function (c, i) {
+    setTimeout(function () { refreshInBackground(c); }, i * 320);
+  });
 }
 
 async function api(path) {
@@ -1200,6 +1246,16 @@ const LS_KEY = 'ldx_radar_codes_v2';
 function showErr(msg) {
   const el = document.getElementById('errbox');
   el.innerHTML = msg ? '<div class="err">' + msg + '</div>' : '';
+}
+
+/* 行情时间：腾讯 time 字段形如 20261102102849 */
+function fmtQTime(s) {
+  const raw = (s && s.quote && s.quote.time) ? String(s.quote.time) : '';
+  if (raw.length >= 12) {
+    return raw.slice(4, 6) + '-' + raw.slice(6, 8) + ' ' + raw.slice(8, 10) + ':' + raw.slice(10, 12);
+  }
+  if (s && s.barDate) return String(s.barDate);
+  return '—';
 }
 
 function stampNow() {
@@ -2025,6 +2081,7 @@ function renderPicker() {
   Object.keys(LOADING).forEach(c => {
     html += `<div class="chip on" style="opacity:.6"><span class="tick"></span>${c} 读取中…</div>`;
   });
+  if (STOCK_DATA.length) html += `<button class="btn ghost" id="live">刷新最新价</button>`;
   if (STOCK_DATA.length > 1) html += `<button class="btn ghost" id="selAll">全选 / 全不选</button>`;
   if (STOCK_DATA.length) html += `<button class="btn ghost" id="clr">清空</button>`;
   el.innerHTML = html || '';
@@ -2039,6 +2096,8 @@ function renderPicker() {
   el.querySelectorAll('.x').forEach(x => x.onclick = e => {
     e.stopPropagation(); removeStock(x.dataset.rm);
   });
+  const lv = document.getElementById('live');
+  if (lv) lv.onclick = () => refreshAllLive(STOCK_DATA.map(s => String(s.code)), true);
   const sa = document.getElementById('selAll');
   if (sa) sa.onclick = () => {
     if (selected.size === STOCK_DATA.length) selected.clear();
@@ -2065,6 +2124,7 @@ const ROWS = [
   { k:'price', n:'现价', f:s => fmt(s.price,2) },
   { k:'chg', n:'当日涨跌', f:s => (s.change>0?'+':'')+fmt(s.change,2)+'%',
     val:s => s.change, signed:true },
+  { k:'qtime', n:'行情时间', f:s => fmtQTime(s), sub:'取自行情接口' },
   { k:'pe', n:'PE (TTM)', f:s => fmt(s.pe,2), best:'min', sub:'门槛 <10', val:s=>s.pe },
   { k:'pb', n:'PB', f:s => fmt(s.pb,3), best:'min', sub:'门槛 <1', val:s=>s.pb },
   { k:'dy', n:'股息率', f:s => fmt(s.divYield,2)+'%', best:'max', sub:'门槛 ≥4%', val:s=>s.divYield },
@@ -2420,7 +2480,8 @@ function init() {
   STOCK_DATA.forEach(s => selected.add(String(s.code)));
   renderPicker(); renderTable(); renderCards(); renderBrief(); renderExec();
   document.getElementById('count').textContent = STOCK_DATA.length + ' 只';
-  document.getElementById('stamp').textContent = '示例数据 ' + SNAP_AT;
+  /* 先把快照秒出，再整批抓最新价替换（这才是"实时版"该有的行为） */
+  refreshAllLive(STOCK_DATA.map(function (x) { return String(x.code); }));
 }
 
 document.addEventListener('DOMContentLoaded', init);
@@ -2428,61 +2489,11 @@ document.addEventListener('DOMContentLoaded', init);
 </script>
 <div style="max-width:1240px;margin:0 auto;padding:18px 26px 40px;font-size:11.5px;
 color:#66738a;line-height:1.95;border-top:1px solid #1f2632">
-<b style="color:#8b97ab">关于这份文件</b>　预置示例是 2026-10-30 收盘的行情；其余代码在你输入时<b style="color:#8b97ab">实时抓取</b>（行情来自腾讯，财报与分红来自东方财富），抓不到就明说抓不到，不编数。
-（本文件生成于 2026-10-30 23:40）<br>
+<b style="color:#8b97ab">关于数据</b>　打开即联网抓最新行情（行情来自腾讯，财报与分红来自东方财富），先出本地快照、随后逐只替换为实时价，看「行情时间」列就知道拿到的是几点几分。抓不到就明说抓不到，不编数。<br>
 评分模型是把公开流传的"好公司、好价格、股息率为锚、逆向投资"等原则做工程化近似，
 <b style="color:#8b97ab">不代表任何个人的观点或推荐，也不构成投资建议</b>。
 分数只适合拿来做横向比较和自我约束，不适合当成买卖指令——同一只票，成本不同、仓位不同，该做的事就不一样。
 </div>
-<details style="max-width:1240px;margin:0 auto 30px;padding:0;font-size:12px;line-height:1.9;
-color:#8b97ab;background:#161d29;border:1px solid #35435c;border-radius:10px">
-<summary style="cursor:pointer;padding:14px 20px;font-size:13px;color:#d9a94a;
-font-weight:600;list-style:none;outline:none">
-▸ 这只是个快照。想让它变成实时的？这里有一段可以交给 AI 的话
-</summary>
-<div style="padding:0 20px 20px;border-top:1px solid #263043">
-
-<p style="margin:14px 0 10px">这个文件里没有服务器，也没有联网能力——它只是把某一天的数按下快门。
-但你可以让它活过来：把<b style="color:#c9d4e4">下面的文字，连同这个 HTML 文件一起</b>，
-发给你常用的 AI（DeepSeek / 豆包 / ChatGPT / Claude 都行）。</p>
-
-<pre style="margin:0 0 14px;padding:14px 16px;background:#0e131b;border:1px solid #263043;
-border-radius:8px;font-family:ui-monospace,Consolas,monospace;font-size:11.5px;line-height:1.75;
-color:#b8c4d6;white-space:pre-wrap;word-break:break-word;user-select:all">这是一个单文件 HTML 打分工具，数据定格在 2026-10-30，只能查 9 只标的。
-请把它改成能联网实时取数的版本，要求如下：
-
-1) 实时行情与前复权日线走腾讯接口（已开放跨域，可直接 fetch）：
-   https://qt.gtimg.cn/q=sh601988
-   https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh601988,day,,,260,qfq
-   注意：行情接口返回 GBK 编码，必须用 TextDecoder('gbk') 解码，不能直接 res.text()。
-
-2) 财务与分红走东方财富，接口没有跨域头，但支持 JSONP：
-   在 URL 末尾加 &callback=cbName，用动态创建 &lt;script&gt; 标签的方式取。
-   财务 reportName=RPT_F10_FINANCE_MAINFINADATA，分红 reportName=RPT_SHAREBONUS_DET。
-
-3) 拿到新数据后，必须重新调用页面里已有的 score(s) 和 buildReasons(s, sc)，
-   不要沿用快照里的 total 和 trigger 字段，否则会出现"价格是今天的、结论是上周的"。
-
-4) 页面顶部实时显示取数时间；取数失败要明确提示失败，绝不能默默显示旧数据。
-
-5) 保留原有打分口径，这几条不要动：
-   - 周期股（煤炭/有色/石油/钢铁）按 PB 算估值，PE 不判方向
-   - 金融股单期净利下滑只降档、不扣分
-   - 52 周位置 > 85% 且 RSI > 65 时，多少分都不得给"推荐建仓"
-   - 个股与 ETF 是两套尺子，不能放同一张表里横向比较
-   - 结论只回答方向，不给金额、不给档位表
-
-6) 筹码分布是三角衰减模型估出来的，只作位置参考，不进分数核心。</pre>
-
-<p style="margin:0 0 8px"><b style="color:#c9d4e4">为什么这段这么长？</b>
-因为接口细节是真踩出来的。腾讯行情返回的是 GBK，直接 <code style="color:#d9a94a">res.text()</code>
-会得到一串乱码；东财财务没有跨域头，但加 <code style="color:#d9a94a">callback=</code> 就能用 JSONP 绕过去。
-这两条写清楚，AI 才不会在浏览器控制台里卡一小时。</p>
-
-<p style="margin:10px 0 0;color:#66738a">配套的完整说明（打分模型全规则、数据源字段表、三套可选的权重预设）
-在工具包里的《给AI的改造指南.md》。</p>
-
-</div>
-</details>
+<!-- 实时版已联网，原「把快照改成实时」的教程块已移除 -->
 </body>
 </html>
