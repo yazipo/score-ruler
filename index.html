@@ -439,7 +439,7 @@ details[open] summary{margin-bottom:14px}
       支付率 <code>&gt;90%</code> → −5；PB<code>&gt;3</code> 且 PE<code>&gt;30</code> → ×0.7；
       52 周位置 <code>&gt;85%</code> 且 RSI<code>&gt;65</code> → <b>追高预警，无论多少分都不得给"建议买"</b>。<br><br>
       <b>分数 → 我的建议</b>　<code>≥75</code> 建议买　·　<code>62–75</code> 可以分批买　·　<code>48–62</code> 已买就拿着，没买先等等　·　<code>35–48</code> 先别买（已买可减）　·　<code>&lt;35</code> 不建议买<br>
-      <b>分数 → 结论（ETF / 基金，走标的指数）</b>　<code>≥75</code> 推荐加投　·　<code>55–75</code> 推荐定投　·　<code>38–55</code> 推荐持有不动　·　<code>22–38</code> 推荐减仓　·　<code>&lt;22</code> 推荐只留底仓。
+      <b>分数 → 我的建议（ETF / 基金，走标的指数）</b>　<code>≥75</code> 建议加投　·　<code>55–75</code> 可以定投　·　<code>38–55</code> 已投就拿着　·　<code>22–38</code> 先别投（已投可减）　·　<code>&lt;22</code> 不建议投。
       基金档位更宽，因为默认处在长期定投中，中性区间的动作是 "按计划继续"，不是停手。<br>
       <b>结论只回答方向，不给金额、不给档位表。</b>
     </div>
@@ -1544,7 +1544,7 @@ function score(s) {
   total = Math.round(total * 10) / 10;
 
   /* ---- 结论：统一五档词表 ----
-     推荐建仓/分批买入/持有不动/减仓/只留底仓
+     建议买/可以分批买/已买就拿着/先别买/不建议买
      不看持仓状态（后端 held 是死的），只从分数出——低分档的"减仓、只留底仓"
      是对"如果持有"说的；没持仓就等同于"别买"。 */
   let verdict, vcolor;
@@ -1718,11 +1718,11 @@ function scoreIndex(s) {
      不引用任何外部阈值（如股息率÷国债 1.5 倍这类衍生指标）——
      结论只从这一个综合分出来，一把尺出一个答案。 */
   let verdict, vcolor;
-  if (total >= 75) { verdict = '推荐加投'; vcolor = 'var(--red)'; }
-  else if (total >= 55) { verdict = '推荐定投'; vcolor = 'var(--orange)'; }
-  else if (total >= 38) { verdict = '推荐持有不动'; vcolor = 'var(--muted)'; }
-  else if (total >= 22) { verdict = '推荐减仓'; vcolor = 'var(--blue)'; }
-  else { verdict = '推荐只留底仓'; vcolor = 'var(--green)'; }
+  if (total >= 75) { verdict = '建议加投'; vcolor = 'var(--red)'; }
+  else if (total >= 55) { verdict = '可以定投'; vcolor = 'var(--orange)'; }
+  else if (total >= 38) { verdict = '已投就拿着'; vcolor = 'var(--muted)'; }
+  else if (total >= 22) { verdict = '先别投（已投可减）'; vcolor = 'var(--blue)'; }
+  else { verdict = '不建议投'; vcolor = 'var(--green)'; }
 
   const dims = {
     V1: { v: V1, max: 40, label: '估值分位', color: 'var(--blue)' },
