@@ -1474,7 +1474,12 @@ function loadSel() {
 
 /* ============ 打分引擎（沿用模板） ============ */
 /* ============ 打分引擎 ============ */
+/* 档位表全是"越小越好"的写法，而 JS 里 null <= 30 是 true、null < 30 也是 true，
+   不拦住的话"没数据"会比"数据很差"拿分更高（C1 从 0.5 直接跳到 8/8）。
+   undefined 本来就走默认值，null 也必须一样。 */
 function pick(v, table, dflt) {
+  if (v === null || v === undefined) return dflt;
+  if (typeof v === 'number' && isNaN(v)) return dflt;
   for (const [cond, pts] of table) if (cond(v)) return pts;
   return dflt;
 }
@@ -1541,7 +1546,7 @@ function score(s) {
   const histPts = pick(s.divTotalRatio, [[v=>v>=100,4],[v=>v>=50,3]], 1.5);
   const A2 = dyPts + payPts + histPts;
   push('A2','分红能力',A2,15,
-    `股息率 ${fmt(s.divYield,2)}% · 支付率 ${fmt(s.payout,0)}% · 累计分红/年均净利 ${fmt(s.divTotalRatio,0)}%`);
+    `股息率 ${fmt(s.divYield,2)}% · 支付率 ${fmt(s.payout,0)}% · 累计分红/年均净利 ${s.divTotalRatio == null ? '未接入（本项恒 1.5/4）' : fmt(s.divTotalRatio,0) + '%'}`);
 
   /* ---- A3 财务稳健 / 10 ---- */
   const debtMiss = (s.debtRatio == null);
@@ -1582,13 +1587,17 @@ function score(s) {
     [v=>v>=4,12],[v=>v>=3.5,8],[v=>v>=3,5],[v=>v>=2,2]], 0);
   push('B2','股息率门槛',B2,12, `股息率 ${fmt(s.divYield,2)}%　（门槛：≥4% 得满分，每降 0.5pct 掉一档）`);
 
-  /* ---- B3 价格位置 / 8 ---- */
-  const pos = s.pos52;
-  let B3 = pick(pos, [[v=>v<=30,8],[v=>v<=50,6],[v=>v<=70,4],[v=>v<=85,2]], 0);
-  const belowMa250 = s.price < s.ma250;
+  /* ---- B3 价格位置 / 8 ----
+     pos52 可能为 null（K 线没取到）。null 在 JS 里等于 0，会先被 pick 判成
+     "≤30 分位"拿满分，再在下面 toFixed 时抛异常，把整张卡片变成 JS 报错原文。 */
+  const pos = (s.pos52 == null ? null : s.pos52);
+  let B3 = pick(pos, [[v=>v<=30,8],[v=>v<=50,6],[v=>v<=70,4],[v=>v<=85,2]], 4);
+  const belowMa250 = (s.ma250 != null && s.price < s.ma250);
   if (belowMa250) B3 = Math.min(8, B3 + 1);
   push('B3','价格位置',B3,8,
-    `52 周分位 ${pos.toFixed(1)}%（${s.lo52}–${s.hi52}）${belowMa250?' · 已跌破年线':' · 在年线之上'}`);
+    pos == null
+      ? '52 周位置数据缺失（K 线没取到），给中性 4 分'
+      : `52 周分位 ${pos.toFixed(1)}%（${s.lo52}–${s.hi52}）${belowMa250?' · 已跌破年线':' · 在年线之上'}`);
 
   /* ---- C1/C2/C3 筹码 ---- */
   const C1 = pick(s.chip.profit, [
@@ -1600,14 +1609,17 @@ function score(s) {
   const C3 = 1.5;
   push('C3','筹码集中度',C3,3, '股东户数环比数据未接入，给中性分');
 
-  /* ---- D 技术面 ---- */
+  /* ---- D 技术面 ----
+     均线/RSI 缺值时不能靠 JS 比较：null < 30 是 true、price > null 也是 true，
+     会让"没数据"直接判成"超卖"或"多头排列"。缺值一律给中位。 */
   let D1;
-  if (s.price > s.ma20 && s.ma20 > s.ma60 && s.ma60 > s.ma250) D1 = 4;
+  if (s.ma20 == null || s.ma60 == null || s.ma250 == null) D1 = 2;
+  else if (s.price > s.ma20 && s.ma20 > s.ma60 && s.ma60 > s.ma250) D1 = 4;
   else if (s.price > s.ma60) D1 = 3;
-  else if (s.ma60 > s.ma120) D1 = 2;
+  else if (s.ma120 != null && s.ma60 > s.ma120) D1 = 2;
   else D1 = 1;
   push('D1','均线结构',D1,4,
-    `价 ${s.price} · MA20 ${s.ma20} · MA60 ${s.ma60} · MA250 ${s.ma250}`);
+    `价 ${fmt(s.price,2)} · MA20 ${fmt(s.ma20,2)} · MA60 ${fmt(s.ma60,2)} · MA250 ${fmt(s.ma250,2)}`);
   let D2;
   if (s.hist > 0 && s.macdUp) D2 = 3;
   else if (s.hist > 0) D2 = 2;
@@ -1616,12 +1628,16 @@ function score(s) {
   push('D2','MACD',D2,3,
     `DIF ${s.dif} · DEA ${s.dea} · 柱 ${s.hist}　${s.hist>0?'金叉':'死叉'}${s.macdUp?'·柱线走强':'·柱线走弱'}`);
   let D3;
-  if (s.rsi < 30 || s.kdjJ < 0) D3 = 3;
-  else if (s.rsi < 50) D3 = 2.5;
-  else if (s.rsi < 65) D3 = 2;
-  else if (s.rsi < 75) D3 = 1;
-  else D3 = 0;
-  if (s.kdjJ > 100) D3 = 0;
+  if (s.rsi == null && s.kdjJ == null) D3 = 1.5;   // 两个都缺 → 中性
+  else {
+    const r = (s.rsi == null ? 50 : s.rsi), j = (s.kdjJ == null ? 50 : s.kdjJ);
+    if (r < 30 || j < 0) D3 = 3;
+    else if (r < 50) D3 = 2.5;
+    else if (r < 65) D3 = 2;
+    else if (r < 75) D3 = 1;
+    else D3 = 0;
+    if (s.kdjJ != null && s.kdjJ > 100) D3 = 0;
+  }
   const _rt = rsiTag(s.rsi), _kt = kdjTag(s.kdjJ);
   push('D3','超买超卖',D3,3,
     `RSI14 ${fmt(s.rsi,1)}<b style="color:${_rt.c}">${_rt.t ? ' ' + _rt.t : ''}</b>` +
@@ -1746,6 +1762,23 @@ function score(s) {
 
   const sell = sellAdvice(s, { total, verdict, vcolor, goodCo, a1: A1 }, exp);
 
+  /* 卖出区说「考虑卖出」，结论就不能说「可以买」或者「拿着」。
+     这两句话并排出现一次，用户就再也不会信任何一个。
+     用 sell.lv 反过来约束 verdict，是这套卡片唯一的自洽方式。
+
+     注意第 2 档必须连「已买就拿着」一起压下去，不能只管买入档：
+     中国神华 57 分（48 分以上→「已买就拿着」），可它的卖出区写的是
+     「位置 100% 且估值门槛基本不过 → 持有它没有理由了」——
+     一张卡片上「拿着」和「持有没理由」并列，就是用户骂的那种自相矛盾。 */
+  if (sell.lv >= 2) {
+    if (verdict === '建议买' || verdict === '可以分批买' || verdict === '已买就拿着，没买先等等') {
+      verdict = '先别买（已买可减）'; vcolor = 'var(--blue)';
+      flags.push({t:'bad', m:'卖出侧条件已触发（' + sell.word + '），所以结论不给「买」也不给「拿着」'});
+    }
+  } else if (sell.lv >= 1 && (verdict === '建议买' || verdict === '可以分批买')) {
+    verdict = '已买就拿着，没买先等等'; vcolor = 'var(--muted)';
+  }
+
   return { total, raw: Math.round(raw*10)/10, dims, detail:d, flags, verdict, vcolor,
            cheap, cheapColor, cheapShort, cheapDetail, sell, exp, goodCo, trap, chase };
 }
@@ -1766,11 +1799,15 @@ function expensive(s) {
     valLv = 0;                      // 指数不套个股绝对门槛（沪深300 的 PE 永远 >10）
   } else if (!s.pe || s.pe <= 0) {
     valLv = 3;                      // PE 缺值，不当成便宜也不当成贵
-  } else if (s.pe >= 30) {
-    valLv = 5;                      // PE 30 以上，任何标准下都算贵
   } else {
     passN = (s.pe < 10 ? 1 : 0) + ((s.pb && s.pb < 1) ? 1 : 0) + ((s.divYield || 0) >= 4 ? 1 : 0);
-    valLv = passN === 3 ? 2 : passN === 2 ? 3 : passN === 1 ? 4 : 5;
+    /* 周期股 PE 变高是"赚得少了"，不是"变贵了"——打分那边已经明说 PE 不判方向、
+       只看 PB，这里却拿 PE≥30 一刀切判"很贵"，同一只票两个结论会打架。
+       另外 passN 必须在这里算完，不能因为 PE≥30 提前跳过——
+       跳过就等于把「三门槛过 2/3」这条有用信息吞成「—」。 */
+    const isCyc = CYCLICAL_CODES.has(String(s.code));
+    if (s.pe >= 30 && !isCyc) valLv = 5;
+    else valLv = passN === 3 ? 2 : passN === 2 ? 3 : passN === 1 ? 4 : 5;
   }
 
   const lv = Math.max(valLv, posLv);
@@ -1975,6 +2012,11 @@ function scoreIndex(s) {
          + '红利指数的 PE 会因成分股盈利下滑被动抬高';
       if (pbP >= 80) flags.push({ t: 'bad', m: 'PB 在历史 80% 分位以上，比过去贵' });
       else if (pbP <= 20) flags.push({ t: 'ok', m: 'PB 在历史 20% 分位以内' });
+    } else if (peP === null && pbP === null) {
+      /* 两个分位都缺时，原来的三元把 w 算成 null，40*(80-null)/60 = 53.3，
+         被 clamp 成满分 40 —— "未知"比"历史最低分位"还便宜，直接推出"建议加投"。 */
+      V1 = 20;
+      v1 = 'PE 与 PB 分位都没拿到 → 中性 20 分（不拿缺值当便宜）';
     } else {
       const w = (peP !== null && pbP !== null) ? (peP * 0.6 + pbP * 0.4) : (peP !== null ? peP : pbP);
       V1 = clamp(40 * (80 - w) / 60, 0, 40);
@@ -1994,7 +2036,7 @@ function scoreIndex(s) {
   const V2 = dyPts + spPts;
   push('V2', '股息与利差', V2, 30,
     dy === null ? '股息率未入库 → 中性 15 分'
-      : ('股息率 ' + dy.toFixed(2) + '%（门槛 4%）· 减 10 年国债 ' + iv.bond10y.toFixed(2)
+      : ('股息率 ' + dy.toFixed(2) + '%（门槛 4%）· 减 10 年国债 ' + (iv.bond10y != null ? iv.bond10y.toFixed(2) : '—')
          + '% 得 ' + (sp >= 0 ? '+' : '') + sp.toFixed(2) + ' pct（2.5pct 满分）'));
   if (dy !== null && dy >= 4) flags.push({ t: 'ok', m: '股息率过 4%，可当收息资产' });
   if (dy !== null && dy >= 3.9 && dy < 4.2) {
@@ -2021,7 +2063,10 @@ function scoreIndex(s) {
   let V4 = 5, v4 = '年线数据缺失 → 中性 5 分';
   if (s.ma250) {
     const dev = (s.price / s.ma250 - 1) * 100;
-    if (dev <= -20) V4 = 4;
+    /* 跌破年线 20% 以上是"趋势破坏"，只给 4 分——这是刻意的台阶，不是连续函数。
+       代价是 −20% 附近有 4 分跳变（4 → 8），这是用分数明确表达"深跌不等于便宜"，
+       不是算错。 */
+    if (dev < -20) V4 = 4;
     else if (dev < -5) V4 = 8 + (dev + 20) / 15 * 2;   // -20% → 8，-5% → 10
     else if (dev <= 5) V4 = 7;
     else if (dev <= 15) V4 = 4;
@@ -2359,7 +2404,7 @@ function renderCards() {
             <div class="m"><div class="k">PE (TTM)</div><div class="v mono">${fmt(s.pe,2)}</div><div class="h">静态 ${fmt(s.peStatic,2)}</div></div>
             <div class="m"><div class="k">PB</div><div class="v mono">${fmt(s.pb,3)}</div><div class="h">每股净资产 ${s.bvps}</div></div>
             <div class="m"><div class="k">股息率</div><div class="v mono" style="color:${s.divYield>=4?'var(--gold)':'var(--text)'}">${fmt(s.divYield,2)}%</div><div class="h">支付率 ${fmt(s.payout,0)}%</div></div>
-            <div class="m"><div class="k">ROE 年化</div><div class="v mono">${fmt(s.roeAnn,1)}%</div><div class="h">${s.reportName||'本期'}原始 ${fmt(s.roe,2)}%（未年化）×${(s.roeAnn/s.roe).toFixed(2)}</div></div>
+            <div class="m"><div class="k">ROE 年化</div><div class="v mono">${fmt(s.roeAnn,1)}%</div><div class="h">${s.reportName||'本期'}原始 ${fmt(s.roe,2)}%（未年化）${(s.roe && s.roeAnn != null) ? '×' + (s.roeAnn/s.roe).toFixed(2) : ''}</div></div>
             <div class="m"><div class="k">净利同比</div><div class="v mono" style="color:${s.profitYoy>=0?'var(--red)':'var(--green)'}">${s.profitYoy>0?'+':''}${fmt(s.profitYoy,1)}%</div><div class="h">营收 ${s.revYoy>0?'+':''}${fmt(s.revYoy,1)}%</div></div>
             <div class="m"><div class="k">52周分位</div><div class="v mono">${fmt(s.pos52,0)}%</div><div class="h">距高 ${fmt(s.dd52,1)}%</div></div>
             <div class="m"><div class="k">近1年</div><div class="v mono" style="color:${s.ret260>=0?'var(--red)':'var(--green)'}">${s.ret260>0?'+':''}${fmt(s.ret260,1)}%</div><div class="h">近60日 ${s.ret60>0?'+':''}${fmt(s.ret60,1)}%</div></div>
@@ -2461,7 +2506,7 @@ function buildReasons(s, sc) {
     } else {
       out.push({m:'<b>跟踪 ' + iv.indexName + '</b>：PE(TTM) ' + fmt(iv.pe,2) + '（' + (iv.pePct==null?'—':iv.pePct.toFixed(0)+'% 分位') + '）、PB ' + fmt(iv.pb,2) + '（' + (iv.pbPct==null?'—':iv.pbPct.toFixed(0)+'% 分位') + '）、股息率 ' + fmt(iv.dy,2) + '%。口径是<b>整体法</b>，与银行螺丝钉的分位数字不在一把尺上，不可直接对比。'});
       if (iv.spread != null) out.push({t: iv.spread >= 2 ? 'ok' : 'warn', m:'<b>股息率 − 10 年国债 = ' + (iv.spread >= 0 ? '+' : '') + fmt(iv.spread,2) + ' pct</b>（国债 ' + fmt(iv.bond10y,2) + '%）。「股大于债」这条原则说的就是它，不是看 PE 高低。'});
-      if (iv.sample < 5) out.push({t:'bad', m:'<b>该指数只有 ' + iv.sample + ' 期历史观测</b>，分位数参考性弱——' + (iv.indexName === '中证A500' ? '中证 A500 是 2024-09 才发布的指数，之前的「十年分位」是回测拼接，不能当低估的铁证。' : '样本不足，分位只能看方向，不能精确到几个点。')});
+      if (!iv.manualPct && (iv.sample || 0) < 5) out.push({t:'bad', m:'<b>该指数只有 ' + iv.sample + ' 期历史观测</b>，分位数参考性弱——' + (iv.indexName === '中证A500' ? '中证 A500 是 2024-09 才发布的指数，之前的「十年分位」是回测拼接，不能当低估的铁证。' : '样本不足，分位只能看方向，不能精确到几个点。')});
     }
     const p = s.pos52;
     if (p != null) {
@@ -2501,19 +2546,23 @@ function buildReasons(s, sc) {
 
   // 估值：三门槛必须逐条数。原来只判了 PE<10 && PB<1，没把股息率当条件，
   // 导致 PB≥1 但 PE、股息率都达标的票（格力这种）被误判成"三条全不过"。
-  const gPE = s.pe != null && s.pe < 10;
-  const gPB = s.pb != null && s.pb < 1;
+  /* 必须排除 ≤0：负数 PE 是亏损，PB ≤0 是净资产为负，两者都不是"估值达标"。
+     以前只判了 null，pe = -15 也能拿到 ✓，会让亏损股被盖章"最典型的好公司+好价格"。 */
+  const gPE = s.pe != null && s.pe > 0 && s.pe < 10;
+  const gPB = s.pb != null && s.pb > 0 && s.pb < 1;
   const gDY = s.divYield != null && s.divYield >= 4;
   const gN  = (gPE ? 1 : 0) + (gPB ? 1 : 0) + (gDY ? 1 : 0);
   /* 缺值不能标成 ✗：拿不到 PE 和数据不合格是两件事，前者是"不知道"。
      三项全缺时直接不给结论，别用"全不过"去替代"没有数据"。 */
   const gMark = (v, ok) => (v == null ? '（缺）' : (ok ? ' ✓' : ' ✗'));
-  const gTxt = `PE ${fmt(s.pe,1)}${gMark(s.pe,gPE)}、PB ${fmt(s.pb,2)}${gMark(s.pb,gPB)}、股息率 ${fmt(s.divYield,2)}%${gMark(s.divYield,gDY)}`;
+  const gMarkPE = v => (v == null ? '（缺）' : v <= 0 ? '（亏损，不算）' : (gPE ? ' ✓' : ' ✗'));
+  const gMarkPB = v => (v == null ? '（缺）' : v <= 0 ? '（净资产为负，不算）' : (gPB ? ' ✓' : ' ✗'));
+  const gTxt = `PE ${fmt(s.pe,1)}${gMarkPE(s.pe)}、PB ${fmt(s.pb,2)}${gMarkPB(s.pb)}、股息率 ${fmt(s.divYield,2)}%${gMark(s.divYield,gDY)}`;
   const gMissing = (s.pe == null && s.pb == null && s.divYield == null);
   const gMiss = [];
-  if (!gPE) gMiss.push('PE 没低于 10 倍');
-  if (!gPB) gMiss.push('PB 没破净');
-  if (!gDY) gMiss.push('股息率没到 4%');
+  if (!gPE) gMiss.push(s.pe == null ? 'PE 没数据' : (s.pe <= 0 ? 'PE 为负（亏损）' : 'PE 没低于 10 倍'));
+  if (!gPB) gMiss.push(s.pb == null ? 'PB 没数据' : (s.pb <= 0 ? 'PB 为负' : 'PB 没破净'));
+  if (!gDY) gMiss.push(s.divYield == null ? '股息率没数据' : '股息率没到 4%');
   if (gMissing) {
     out.push({t:'warn', m:`<b>PE / PB / 股息率三项都没拿到</b>，门槛判断做不了。这种情况下不给结论，比硬给一个「全不过」强——数据缺失不是"不合格"。`});
   } else if (gN === 3) {
@@ -2522,7 +2571,9 @@ function buildReasons(s, sc) {
     const why = !gPB
       ? 'PB 没破净，对轻资产、高 ROE 的公司是常态——好公司很少按清算价卖，破净更多出现在银行、钢铁、地产这类重资产行业。所以这条没过大可不必当硬伤，真正要看的是 PE 和股息率这两条。'
       : (!gPE
-        ? 'PE 已经过了 10 倍，说明现价里含了成长预期，不再是纯粹的「便宜」。'
+        ? (s.pe != null && s.pe <= 0
+          ? 'PE 是负的，说明公司在亏损——亏损股的市盈率没有意义，不能当「便宜」看。'
+          : 'PE 已经过了 10 倍，说明现价里含了成长预期，不再是纯粹的「便宜」。')
         : '股息率没到 4%，收息这条不成立，只能赚价差。');
     out.push({m:`<b>三门槛过两条</b>：${gTxt}（差「${gMiss[0]}」这一条）。${why}`});
   } else if (gN === 1) {
@@ -2747,6 +2798,10 @@ function toExec(s) {
     weibi: q.weibi || 0, mainFlow: s.fundFlow || 0,
     sScore: score(s).total,
     isIdx: !!(s.isFund || s.isIndexVal || s.isOTC),
+    /* 盘口缺失时 toExec 会把 avg/low 全部回落到现价，导致 zone 恒判"合理"、
+       换手 0 拿满分，最后给出一句"执行条件好，可以下手"——比真有盘口时还高分。
+       这里带一个原始标志，让下游知道"是没数据"而不是"数据很理想"。 */
+    hasQuote: !!(q.low > 0 && q.avg > 0),
     bids: q.bids || [], asks: q.asks || [],
   };
 }
@@ -2756,11 +2811,12 @@ function tScore(o) {
   const add = (n, val, pts, max) => items.push({n, val, pts, max});
 
   const t = o.turnover;
-  const p1 = t<1?25 : t<3?22 : t<5?16 : t<10?10 : t<15?4 : 0;
+  /* 换手 0 有两种：停牌/没数据，和"冷到没人交易"。前者不能给"最佳买点"25 分。 */
+  const p1 = (t == null || t === 0) ? 12 : t<1?25 : t<3?22 : t<5?16 : t<10?10 : t<15?4 : 0;
   add('换手率', t.toFixed(2)+'%', p1, 25);
 
-  const c = o.chg;
-  const p2 = (c>=-2&&c<=2)?18 : (c>2&&c<=5)?12 : (c>5&&c<=7)?6 : c>7?0 : (c>=-5)?13 : 8;
+  const c = (o.chg == null ? 0 : o.chg);
+  const p2 = (o.chg == null) ? 9 : (c>=-2&&c<=2)?18 : (c>2&&c<=5)?12 : (c>5&&c<=7)?6 : c>7?0 : (c>=-5)?13 : 8;
   add('当日涨幅', (c>0?'+':'')+c.toFixed(2)+'%', p2, 18);
 
   const dev = (o.price/o.avg-1)*100;
@@ -2790,10 +2846,14 @@ function tScore(o) {
   const p7 = f>0?7 : f>-0.5?4 : f>-2?2 : 1;
   add('主力资金（当日）', (f>0?'+':'')+f.toFixed(2)+'亿', p7, 7);
 
-  const total = p1+p2+p3+p4+p5+p6+p7;
+  let total = p1+p2+p3+p4+p5+p6+p7;
 
   let verdict, color;
-  if (total >= 75) { verdict='执行条件好，可以下手'; color='var(--red)'; }
+  if (!o.hasQuote) {
+    /* 没数据就不评时点。以前这里会算出一个 74 分并说"可以下手"，
+       比真有盘口时还高——等于奖励"看不见"。 */
+    total = 0; verdict = '没有盘口数据，不评时点'; color = 'var(--muted)';
+  } else if (total >= 75) { verdict='执行条件好，可以下手'; color='var(--red)'; }
   else if (total >= 60) { verdict='可以分批，别一次'; color='var(--orange)'; }
   else if (total >= 45) { verdict='等更好的时点'; color='var(--muted)'; }
   else { verdict='别在这个时点买'; color='var(--green)'; }
@@ -2801,18 +2861,25 @@ function tScore(o) {
   const veto = [];
   if (t > 15) veto.push('换手率 ' + t.toFixed(1) + '% —— 超过 15%，纯博弈区');
   if (c > 7 && (o.zt - o.price)/o.price < 0.02) veto.push('涨幅 ' + c.toFixed(1) + '%，距涨停仅 ' + ((o.zt-o.price)/o.price*100).toFixed(2) + '%');
-  if (askSum > 0 && bidSum === 0) veto.push('买盘挂单为 0，跌停或极度恐慌，别去接');
+  if (!o.hasQuote) veto.push('行情接口没返回今天的盘口（停牌或数据源异常），时点判断做不了，别用别的信号硬凑');
+  else if (askSum > 0 && bidSum === 0) veto.push('买盘挂单为 0，跌停或极度恐慌，别去接');
   else if (askSum > 0 && bidSum > 0 && ratio < 0.1) veto.push('卖盘挂单是买盘的 ' + (askSum/bidSum).toFixed(1) + ' 倍');
   /* 战略层否决只在"个股且分数有效"时成立：
      sScore 为 null（行情没抓全）时 null<35 为 true，会把正常标的误判成不合格；
      ETF/指数的分数是分位尺，35 分在那儿是"偏贵"不是"不合格"，不能套这个否决。 */
-  if (o.sScore != null && !o.isIdx && o.sScore < 35) veto.push('战略层仅 ' + fmt(o.sScore,1) + ' 分，不合格标的');
+  /* 35 分这条线和结论的档位不是一把尺：结论把 35–48 判成「先别买（已买可减）」，
+     也就是说这一档本来就不该买，T 层却还允许说「执行条件好，可以下手」。
+     否决线提到 48，跟结论对齐。 */
+  if (o.sScore != null && !o.isIdx && o.sScore < 48)
+    veto.push('战略层仅 ' + fmt(o.sScore,1) + ' 分（48 分以下本来就是「先别买」档），时点再好也不该下手');
   if (veto.length) { verdict = '明确不建议'; color = 'var(--green)'; }
 
   // 价位区间
   const zLo = o.low, zHi = Math.min(o.avg, o.low * 1.02);
   let zoneMark, zoneColor, zonePct;
-  if (o.price >= zLo && o.price <= zHi) {
+  if (!o.hasQuote) {
+    zoneMark = '没有拿到今天的盘口，判断不了买入区间'; zoneColor = 'var(--muted)'; zonePct = 0;
+  } else if (o.price >= zLo && o.price <= zHi) {
     zoneMark = '合理，在当前成本区之内'; zoneColor = 'var(--red)'; zonePct = 0;
   } else if (o.price > zHi) {
     zonePct = (o.price/zHi - 1) * 100;
@@ -2833,6 +2900,13 @@ function tScore(o) {
    所以这里只输出一个结论 + 三句大白话，原始 10 行报价默认收起来。 */
 function bookRead(o, r) {
   const z = r.zone;
+  /* 没盘口就别下结论。zone 在缺数据时会被 toExec 的兜底填成"lo=hi=现价"，
+     于是恒判"合理，在当前成本区之内"——缺数据反而比有数据更乐观。 */
+  if (!o.hasQuote) {
+    return { big: '没有盘口数据，不评时点', color: 'var(--muted)',
+      why: '行情接口今天没返回这只的盘口（停牌，或数据源异常）。缺数据的时候给一句"可以下手"是最危险的错，所以这里直接不判。',
+      sigs: [], devAvg: 0, outR: null };
+  }
   const devAvg = o.avg ? (o.price / o.avg - 1) * 100 : 0;
   const tot = (o.inside + o.outside);
   const outR = tot > 0 ? o.outside / tot * 100 : null;
@@ -2865,11 +2939,12 @@ function bookRead(o, r) {
   });
   sigs.push({
     k: '挂单：想买的 vs 想卖的',
-    v: fmt(r.ratio, 2) + ' 倍',
-    tag: r.ratio >= 1.2 ? '下方接单厚，跌下去有人接'
+    v: r.askSum === 0 ? '无卖单' : fmt(r.ratio, 2) + ' 倍',
+    tag: r.askSum === 0 ? '涨停封死，卖盘为 0——想买也买不到，这时候谈"接单厚"没有意义'
+        : r.ratio >= 1.2 ? '下方接单厚，跌下去有人接'
         : r.ratio <= 0.8 ? '上方压单多，涨上去有人卖'
         : '两边差不多，没有明显倾向',
-    good: r.ratio >= 1.0
+    good: r.askSum === 0 ? false : r.ratio >= 1.0
   });
   sigs.push({
     k: '主动买还是主动卖',
@@ -2981,7 +3056,7 @@ function renderExec() {
         ${bidRows}
       </div>
       <div style="font-size:11px;color:var(--muted2);margin:10px 0 6px">
-        买 ${r.bidSum} 手 : 卖 ${r.askSum} 手 = ${fmt(r.ratio,2)} 倍 · 执行分 ${r.total}/100
+        买 ${r.bidSum} 手 : 卖 ${r.askSum} 手 ${r.askSum === 0 ? '（无卖单，涨停封板）' : '= ' + fmt(r.ratio,2) + ' 倍'} · 执行分 ${r.total}/100
       </div>
       <div class="dtl">${dtl}</div>
     </div>
