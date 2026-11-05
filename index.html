@@ -2174,7 +2174,10 @@ function buyMeter(s) {
   }
   const t4 = s.price * dy / 4;          // 股息率刚好 4% 时对应的价格（门槛价）
   const dPrice = Math.abs(s.price - t4);
-  const toGo = (s.price / t4 - 1) * 100; // 离门槛价还差几个点（正=还得跌）
+  /* 到门槛价还需跌多少：分母必须是现价，(1 - t4/price) 恒落在 0~100 之间。
+     旧写法 (price/t4 - 1) 算的是"现价是门槛价的几倍 - 1"，股息率越低越离谱
+     （0.11% 会算出 3536%，而跌幅永远不可能超过 100%）。 */
+  const dropPct = (1 - t4 / s.price) * 100;
   const fold = (40 / dy);               // 现价相当于门槛价的几折（dy=8% → 5.0 折）
 
   /* 结论：直接用股息率说事，不再显示"距买点 +93%"这种没有方向的余量 */
@@ -2182,17 +2185,27 @@ function buyMeter(s) {
   if (dy >= 5)        { color = '#3fa87a'; pill = '很划算（远超 4%）'; }
   else if (dy >= 4)   { color = '#3fa87a'; pill = '够了（已过 4%）'; }
   else if (dy >= 3.5) { color = '#dd9a3f'; pill = '差一点（不到 4%）'; }
-  else                { color = '#8894a8'; pill = '不够（离 4% 还远）'; }
+  else if (dy >= 1.5) { color = '#8894a8'; pill = '不够（离 4% 还远）'; }
+  else                { color = '#8894a8'; pill = '不是收息股'; }
 
   const warn = (s.payout > 90)
     ? '　但支付率 ' + fmt(s.payout,0) + '%，分红超过净利，这个股息率不可持续，别当便宜看。'
     : '';
-  const sub = (dy >= 4
-      ? '现价 ' + fmt(s.price,2) + '，每年分红回报 ' + dy.toFixed(2) + '%，相当于门槛价 '
-        + fmt(t4,2) + ' 打 ' + fold.toFixed(1) + ' 折。'
-      : '现价 ' + fmt(s.price,2) + '，股息率只有 ' + dy.toFixed(2) + '%；要跌到 '
-        + fmt(t4,2) + '（再跌 ' + toGo.toFixed(1) + '%）才够 4%。')
-    + warn;
+  let sub;
+  if (dy >= 4) {
+    sub = '现价 ' + fmt(s.price,2) + '，每年分红回报 ' + dy.toFixed(2) + '%，相当于门槛价 '
+        + fmt(t4,2) + ' 打 ' + fold.toFixed(1) + ' 折。';
+  } else if (dropPct >= 90) {
+    /* 要跌掉九成以上才够 4%，等于归零，这种票不在收息口径里，
+       不该再引导用户去等一个不现实的价格。按实际跌幅判，不按股息率硬卡。 */
+    sub = '现价 ' + fmt(s.price,2) + '，股息率只有 ' + dy.toFixed(2) + '%，离 4% 门槛差 '
+        + (4 / dy).toFixed(0) + ' 倍。要跌到 ' + fmt(t4,2) + ' 元（−' + dropPct.toFixed(0)
+        + '%）才够，等于归零，不现实。这只不是收息股，别用股息率定买点。';
+  } else {
+    sub = '现价 ' + fmt(s.price,2) + '，股息率只有 ' + dy.toFixed(2) + '%；要跌到 '
+        + fmt(t4,2) + '（再跌 ' + dropPct.toFixed(1) + '%）才够 4%。';
+  }
+  sub += warn;
 
   /* 进度条：50 的位置正好是"股息率=4%"。右=超门槛（便宜），左=不足（贵） */
   const pos = Math.max(2, Math.min(98, 50 + (dy / 4 - 1) * 50));
