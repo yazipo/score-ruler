@@ -605,6 +605,8 @@ const LIVE = (function () {
     let c = String(code).trim().toUpperCase().replace(/^(SH|SZ|BJ)/, '').replace(/[^0-9]/g, '');
     if (c.length !== 6) throw new Error('代码必须是 6 位数字');
     const h = c[0];
+    // 北交所 2024 年后的新号段是 920xxx，9 开头的通用规则会把它判成沪市，必须先拦
+    if (/^920/.test(c)) return ['0.' + c, 'bj'];
     if ('659'.indexOf(h) >= 0) return ['1.' + c, 'sh'];
     if ('0312'.indexOf(h) >= 0) return ['0.' + c, 'sz'];
     if ('48'.indexOf(h) >= 0) return ['0.' + c, 'bj'];
@@ -1632,7 +1634,10 @@ function score(s) {
 
   /* ---- 修正 ---- */
   let trap = false, chase = false;
-  if (s.profitYoy < -20 && s.divYield > 4) {
+  /* 阈值必须与 sellAdvice 的 A 段一致（那里用 -15）。
+     以前这里是 -20，导致格力这种"净利 -19.5% + 股息率 5.15%"的票：
+     结论说「可以分批买」，同一张卡片的卖出区却说「别加仓」——自相矛盾。 */
+  if (s.profitYoy < -15 && s.divYield > 4) {
     trap = true;   // 无论金融与否，都保留"降一档"——盈利确实在退
     if (finLike) {
       /* 金融股：利润波动主要来自会计口径（投资收益、准备金折现率、拨备节奏），
@@ -1648,7 +1653,10 @@ function score(s) {
   if (pos > 85 && s.rsi > 65) { chase = true; flags.push({t:'warn', m:'追高预警：位置 ' + pos.toFixed(0) + '% + RSI ' + s.rsi}); }
   if (pos > 85) flags.push({t:'gold', m:'位置偏高：52 周分位 ' + pos.toFixed(0) + '%'});
   if (s.divYield >= 4) flags.push({t:'ok', m:'股息率过 4% 门槛'});
-  if (s.pb < 1 && s.pe < 10) flags.push({t:'ok', m:'PE<10 且 PB<1 双过'});
+  /* 缺值保护：JS 里 null < 1 是 true，所以 PE/PB 拿不到数据时
+     会被误判成"双过"，给一只没有估值数据的票盖上便宜章。 */
+  if (s.pb != null && s.pe != null && s.pb > 0 && s.pe > 0 && s.pb < 1 && s.pe < 10)
+    flags.push({t:'ok', m:'PE<10 且 PB<1 双过'});
   if (s.chip.profit > 95) flags.push({t:'warn', m:'获利盘 ' + fmt(s.chip.profit,0) + '%，几乎无套牢盘缓冲'});
   if (s.chip.above > 40) flags.push({t:'gold', m:'上方套牢 ' + fmt(s.chip.above,0) + '%，反弹有压力'});
 
@@ -1703,6 +1711,18 @@ function score(s) {
 
   /* ---- 现在贵不贵：估值 + 位置，取更贵的那个 ---- */
   const exp = expensive(s);
+
+  /* ---- 位置/估值已经偏贵，就不再给"买"的档位 ----
+     中行就撞过这条：分数 62+ 说「可以分批买」，同一张卡片的卖出区却说
+     「偏贵 → 别在这个位置加仓」，两个相反指令并排。价格这把尺子说贵，
+     结论就不能说买——宁可少一个买入信号，也不能让两张结论互相打脸。 */
+  /* 精确比对，不能用 /建议买/ 正则——它会连"不建议买"一起匹配到，
+     把最差的结论错误地"升级"成"已买就拿着"。 */
+  if (exp.lv >= 4 && (verdict === '建议买' || verdict === '可以分批买')) {
+    verdict = '已买就拿着，没买先等等'; vcolor = 'var(--muted)';
+    flags.push({ t:'warn', m:'位置/估值已偏贵（' + exp.short + '），所以不给「买」的结论——分数够，但价位不到' });
+  }
+
   let cheap = exp.word, cheapColor = exp.color, cheapShort = exp.short, cheapDetail = exp.detail;
 
   /* 不是好公司时，"三门槛全过"不能叫便宜——那是市场对资产质量的定价，
@@ -1819,11 +1839,21 @@ function sellAdvice(s, sc, exp) {
     lv = 2;
     items.push({ t: 'bad', m: '位置 ' + fmt(s.pos52, 0) + '%（一年最高）且估值门槛基本不过 → 持有它没有理由了' });
   } else if (exp.lv >= 5) {
-    lv = Math.max(lv, 1);
-    items.push({ t: 'warn', m: '已经很贵（' + exp.short + '）→ 不该再加，有浮盈可考虑减一部分' });
+    /* 定投品种和个股的"贵"含义不同：定投本来就是在贵的时候买少一点，
+       不该因为位置高就喊"别加仓"——那会和"可以定投"直接打架。 */
+    if (isIdx) {
+      items.push({ t: 'warn', m: '很贵（' + exp.short + '）→ 可以减少单次扣款额，但不必因此清仓' });
+    } else {
+      lv = Math.max(lv, 1);
+      items.push({ t: 'warn', m: '已经很贵（' + exp.short + '）→ 不该再加，有浮盈可考虑减一部分' });
+    }
   } else if (exp.lv === 4) {
-    lv = Math.max(lv, 1);
-    items.push({ t: 'warn', m: '偏贵（' + exp.short + '）→ 别在这个位置加仓' });
+    if (isIdx) {
+      items.push({ t: 'warn', m: '偏贵（' + exp.short + '）→ 定投可以继续，但别一次性加仓' });
+    } else {
+      lv = Math.max(lv, 1);
+      items.push({ t: 'warn', m: '偏贵（' + exp.short + '）→ 别在这个位置加仓' });
+    }
   } else {
     items.push({ t: 'ok', m: '价格不算贵（' + exp.short + '）' });
   }
@@ -1831,6 +1861,18 @@ function sellAdvice(s, sc, exp) {
   /* C 综合分 */
   if (total === null) {
     items.push({ t: 'ok', m: '这只没有个股综合分（走分位口径），所以不看分数，只看上面的位置' });
+  } else if (isIdx) {
+    /* 指数/ETF 走的是分位尺（档位 22 / 38 / 55 / 75），和个股的 35 / 48 阈值不是一把尺。
+       以前这里没分开，导致一只 ETF 拿 40 分时，结论说"已投就拿着"、卖出区却说"该减"，自相矛盾。 */
+    if (total < 22) {
+      lv = 2;
+      items.push({ t: 'bad', m: '分位分 ' + fmt(total, 1) + '（低于 22 档）→ 分位尺下已经很贵，可以考虑撤' });
+    } else if (total < 38) {
+      lv = Math.max(lv, 1);
+      items.push({ t: 'warn', m: '分位分 ' + fmt(total, 1) + '（22–38 档）→ 偏贵，只减不加' });
+    } else {
+      items.push({ t: 'ok', m: '分位分 ' + fmt(total, 1) + '（38 档以上）→ 仍在可持有区间，不为分数卖出' });
+    }
   } else if (total < 35) {
     lv = 2;
     items.push({ t: 'bad', m: '综合分 ' + fmt(total, 1) + '（低于 35 档）→ 这套标准下它已经不合格' });
@@ -1848,8 +1890,11 @@ function sellAdvice(s, sc, exp) {
     items.push({ t: 'bad', m: '不是好公司（盈利质量 ' + fmt(sc.a1, 1) + '/15）→ 分数高是因为便宜，'
       + '该换掉而不是该加仓。便宜有便宜的原因' });
   } else if (sc.goodCo === 'weak') {
-    lv = Math.max(lv, 1);
-    items.push({ t: 'warn', m: '好公司偏弱（盈利质量 ' + fmt(sc.a1, 1) + '/15）→ 别把它当成核心仓' });
+    /* 这里不再抬 lv。以前抬到 1，卖出结论变成"别加仓"，
+       而同一张卡片的结论可能是"可以分批买"（大秦 71 分就是这种）——
+       一个说能买、一个说别加，自相矛盾。盈利质量偏弱的正确指令是
+       "仓位小、别当核心"，不是"不许加"。 */
+    items.push({ t: 'warn', m: '好公司偏弱（盈利质量 ' + fmt(sc.a1, 1) + '/15）→ 只能小仓位，别把它当核心仓' });
   }
 
   const WORD = ['继续拿着，不用动', '别加仓；有浮盈可减一部分', '考虑卖出'];
@@ -1859,6 +1904,9 @@ function sellAdvice(s, sc, exp) {
 
 /* ---- 股息率反推买价 ---- */
 function divLadder(s) {
+  // 没有分红就没有"按股息率反推"这回事；股息率极低（要跌九成才够 4%）时
+  // 反推出来的价位等于归零，同样是误导。两种情况都返回空数组，让调用方给文案。
+  if (!(s.divYield > 0) || !(s.price > 0) || (1 - s.divYield / 4) * 100 >= 90) return [];
   // 只给"当前股息率之上"的档位 —— 低于当前股息率的价位在现价之上，没有意义
   const dps = s.price * s.divYield / 100;
   let r = Math.ceil(s.divYield * 2) / 2;      // 向上取到 0.5 的整数倍
@@ -2229,7 +2277,6 @@ function renderCards() {
     const bm = buyMeter(s);
     const d = sc.dims;
     const chgCls = s.change >= 0 ? 'up' : 'dn';
-    const ladder = s.isOTC ? [] : divLadder(s);
     const reasons = buildReasons(s, sc);
 
     const dimHtml = Object.values(d).map(x => {
@@ -2242,14 +2289,25 @@ function renderCards() {
 
     const flagHtml = sc.flags.map(f => `<span class="flag f-${f.t}">${f.m}</span>`).join('');
 
-    const ladderHtml = s.isOTC ? '<div style="font-size:12px;color:var(--muted2)">场外基金没有股息率口径，无法按股息率反推买价。看净值位置（近一年 %s%% 分位）和筹码分布即可。</div>'.replace('%s', Math.round(s.pos52)) : ladder.map(l => {
+    /* 股息率为 0 时反推出来的是 0.00 元三档（分子 dps=0）；
+       股息率极低时（要跌九成以上才够 4%）反推出的价位同样没有参考意义。
+       两种都不该显示，否则会给出"跌到 2.8 元"这种等于归零的误导价。 */
+    const needDrop = (s.divYield > 0) ? (1 - s.divYield / 4) * 100 : 100;
+    const ladder = (s.isOTC || !(s.divYield > 0) || needDrop >= 90) ? [] : divLadder(s);
+    const ladderHtml = s.isOTC
+      ? '<div style="font-size:12px;color:var(--muted2)">场外基金没有股息率口径，无法按股息率反推买价。看净值位置（近一年 ' + Math.round(s.pos52) + '% 分位）和筹码分布即可。</div>'
+      : (!ladder.length
+        ? (s.divYield > 0
+          ? '<div style="font-size:12px;color:var(--muted2)">股息率只有 ' + fmt(s.divYield,2) + '%，要升到 4% 得跌掉九成以上（等于归零），反推出的价位没有参考意义，所以不给。</div>'
+          : '<div style="font-size:12px;color:var(--muted2)">这只没有可用的每股分红（股息率 ' + fmt(s.divYield,2) + '%），算不出按股息率反推的买价——它不是收息股，别用这套尺子。</div>')
+        : ladder.map(l => {
       const isNear = Math.abs(l.d) < 6;
       return `<div class="c">
         <div class="r">分红率升到 ${l.r.toFixed(1)}%</div>
         <div class="p" style="color:${isNear?'var(--gold)':'var(--text)'}">${l.p.toFixed(2)}</div>
         <div class="d">${l.d>=0?'比现在贵 ':'比现在便宜 '}${Math.abs(l.d).toFixed(1)}%</div>
       </div>`;
-    }).join('');
+    }).join(''));
 
     return `<div class="card">
       <div class="card-accent" style="background:${sc.vcolor}"></div>
@@ -2338,9 +2396,11 @@ function renderCards() {
 
           <div class="trig">
             <div class="th">想更便宜？—— 再加仓参考价</div>
-            <div class="trig-note">下面三个价，是「如果股价再跌一些，你每年的<b>分红回报率（股息率）</b>会升到多少」。价格越低，同样一笔钱每年拿到的分红越多，越划算。现在的价格已经对应 <b>${fmt(s.divYield,2)}%</b> 的股息率，本身不低。</div>
+            <div class="trig-note">下面三个价，是「如果股价再跌一些，你每年的<b>分红回报率（股息率）</b>会升到多少」。价格越低，同样一笔钱每年拿到的分红越多，越划算。现在的价格对应的股息率是 <b>${fmt(s.divYield,2)}%</b>，${!(s.divYield > 0) ? '这只没有可用的股息率。' : s.divYield >= 4 ? '已经过了 <b>4%</b> 门槛，属于能收息的价格。' : s.divYield >= 3 ? '还没到 <b>4%</b> 门槛，只能算接近。' : s.divYield >= 1.5 ? '离 <b>4%</b> 门槛还远，现在买谈不上收息。' : '股息率极低，它不在收息口径里。'}</div>
             <div class="buyline">${ladderHtml}</div>
-            <div class="trig-foot">${s.isOTC ? '净值型产品，无"每股分红"概念。' : '按当前每股分红 ' + (s.price*s.divYield/100).toFixed(3) + ' 元反推；分红方案变了要重算。'}</div>
+            <div class="trig-foot">${s.isOTC ? '净值型产品，无"每股分红"概念。'
+              : (s.isFund ? '按<b>标的指数</b>的股息率反推（不是 ETF 自己派息），且需先扣 20% 红利税；指数成分或分红口径变了要重算。'
+              : '按当前每股分红 ' + (s.price*s.divYield/100).toFixed(3) + ' 元反推；分红方案变了要重算。')}</div>
             ${s.trigger ? `<div class="trig-tip"><b>这只股特别要注意：</b>${s.trigger}</div>` : ''}
           </div>
         </div>
@@ -2445,12 +2505,18 @@ function buildReasons(s, sc) {
   const gPB = s.pb != null && s.pb < 1;
   const gDY = s.divYield != null && s.divYield >= 4;
   const gN  = (gPE ? 1 : 0) + (gPB ? 1 : 0) + (gDY ? 1 : 0);
-  const gTxt = `PE ${fmt(s.pe,1)}${gPE ? ' ✓' : ' ✗'}、PB ${fmt(s.pb,2)}${gPB ? ' ✓' : ' ✗'}、股息率 ${fmt(s.divYield,2)}%${gDY ? ' ✓' : ' ✗'}`;
+  /* 缺值不能标成 ✗：拿不到 PE 和数据不合格是两件事，前者是"不知道"。
+     三项全缺时直接不给结论，别用"全不过"去替代"没有数据"。 */
+  const gMark = (v, ok) => (v == null ? '（缺）' : (ok ? ' ✓' : ' ✗'));
+  const gTxt = `PE ${fmt(s.pe,1)}${gMark(s.pe,gPE)}、PB ${fmt(s.pb,2)}${gMark(s.pb,gPB)}、股息率 ${fmt(s.divYield,2)}%${gMark(s.divYield,gDY)}`;
+  const gMissing = (s.pe == null && s.pb == null && s.divYield == null);
   const gMiss = [];
   if (!gPE) gMiss.push('PE 没低于 10 倍');
   if (!gPB) gMiss.push('PB 没破净');
   if (!gDY) gMiss.push('股息率没到 4%');
-  if (gN === 3) {
+  if (gMissing) {
+    out.push({t:'warn', m:`<b>PE / PB / 股息率三项都没拿到</b>，门槛判断做不了。这种情况下不给结论，比硬给一个「全不过」强——数据缺失不是"不合格"。`});
+  } else if (gN === 3) {
     out.push({t:'gold', m:`<b>三门槛全过</b>：${gTxt}。低估值、破净、高股息同时成立，这是最典型的「好公司 + 好价格」。`});
   } else if (gN === 2) {
     const why = !gPB
@@ -2542,8 +2608,14 @@ const ROWS = [
   { k:'buypt', n:'距买点', f:s => { const b = buyMeter(s); return b.big + '<span class="sub">' + b.pill + '</span>'; } },
   /* ETF 那格以前写成「分位61」，容易被读成"估值处在 61% 分位"——它其实是四腿打出来的
      100 分制分数，跟分位数不是一回事。改成「指数尺 61」明确标尺。 */
-  { k:'score', n:'综合分', f:s => (s.isOTC || (s.isFund && !s.isIndexVal)) ? '不适用'
-        : (s.isIndexVal ? '指数尺 ' + score(s).total.toFixed(0) : score(s).total.toFixed(1)), best:'max' },
+  /* 行情没抓全时 score() 会给空壳（total=null），原来直接 .toFixed 会抛异常，
+     一张表渲染失败会连带整页空白——这里必须先判空。 */
+  { k:'score', n:'综合分', f:s => {
+      const sc = score(s);
+      if (sc.total == null) return '不适用';
+      return s.isIndexVal ? '指数尺 ' + sc.total.toFixed(0) : sc.total.toFixed(1);
+    },
+    val:s => { const t = score(s).total; return t == null ? null : t; }, best:'max' },
   { k:'verdict', n:'结论', raw:true },
   { k:'price', n:'现价', f:s => fmt(s.price,2) },
   { k:'chg', n:'当日涨跌', f:s => (s.change>0?'+':'')+fmt(s.change,2)+'%',
@@ -2674,6 +2746,7 @@ function toExec(s) {
     inside: q.inside || 0, outside: q.outside || 0,
     weibi: q.weibi || 0, mainFlow: s.fundFlow || 0,
     sScore: score(s).total,
+    isIdx: !!(s.isFund || s.isIndexVal || s.isOTC),
     bids: q.bids || [], asks: q.asks || [],
   };
 }
@@ -2694,9 +2767,11 @@ function tScore(o) {
   const p3 = dev<0?15 : dev<=1?12 : dev<=3?7 : dev<=5?3 : 0;
   add('现价 vs 均价', (dev>0?'+':'')+dev.toFixed(2)+'%', p3, 15);
 
-  const outR = o.outside/(o.inside+o.outside);
-  const p4 = outR>0.60?13 : outR>0.55?10 : outR>0.50?8 : outR>0.45?5 : 3;
-  add('内外盘（外盘占比）', (outR*100).toFixed(1)+'%', p4, 13);
+  /* 内外盘会同时为 0（停牌、数据没拿到），0/0 = NaN 会渲染成 "NaN%"。 */
+  const ioSum = o.inside + o.outside;
+  const outR = ioSum > 0 ? o.outside / ioSum : null;
+  const p4 = outR === null ? 5 : outR>0.60?13 : outR>0.55?10 : outR>0.50?8 : outR>0.45?5 : 3;
+  add('内外盘（外盘占比）', outR === null ? '—' : (outR*100).toFixed(1)+'%', p4, 13);
 
   const w = o.weibi;
   const p5 = w>20?12 : w>0?9 : w>-20?6 : w>-50?3 : 1;
@@ -2704,9 +2779,12 @@ function tScore(o) {
 
   const bidSum = o.bids.reduce((a,b)=>a+b[1],0);
   const askSum = o.asks.reduce((a,b)=>a+b[1],0);
-  const ratio = bidSum/askSum;
+  /* 涨停时卖盘会是 0 手 → bidSum/0 = Infinity，会渲染成"买卖挂单比 Infinity 倍"。
+     给一个封闭值 99 并单独出文案，别把无穷大端到用户面前。 */
+  const ratio = askSum > 0 ? bidSum / askSum : (bidSum > 0 ? 99 : 1);
+  const ratioTxt = askSum > 0 ? ratio.toFixed(2) : (bidSum > 0 ? '无卖单' : '—');
   const p6 = ratio>1.5?10 : ratio>1?7 : ratio>0.6?4 : ratio>0.3?2 : 0;
-  add('买卖挂单比', ratio.toFixed(2), p6, 10);
+  add('买卖挂单比', ratioTxt, p6, 10);
 
   const f = o.mainFlow;
   const p7 = f>0?7 : f>-0.5?4 : f>-2?2 : 1;
@@ -2723,8 +2801,12 @@ function tScore(o) {
   const veto = [];
   if (t > 15) veto.push('换手率 ' + t.toFixed(1) + '% —— 超过 15%，纯博弈区');
   if (c > 7 && (o.zt - o.price)/o.price < 0.02) veto.push('涨幅 ' + c.toFixed(1) + '%，距涨停仅 ' + ((o.zt-o.price)/o.price*100).toFixed(2) + '%');
-  if (ratio < 0.1) veto.push('卖盘挂单是买盘的 ' + (askSum/bidSum).toFixed(1) + ' 倍');
-  if (o.sScore < 35) veto.push('战略层仅 ' + o.sScore + ' 分，不合格标的');
+  if (askSum > 0 && bidSum === 0) veto.push('买盘挂单为 0，跌停或极度恐慌，别去接');
+  else if (askSum > 0 && bidSum > 0 && ratio < 0.1) veto.push('卖盘挂单是买盘的 ' + (askSum/bidSum).toFixed(1) + ' 倍');
+  /* 战略层否决只在"个股且分数有效"时成立：
+     sScore 为 null（行情没抓全）时 null<35 为 true，会把正常标的误判成不合格；
+     ETF/指数的分数是分位尺，35 分在那儿是"偏贵"不是"不合格"，不能套这个否决。 */
+  if (o.sScore != null && !o.isIdx && o.sScore < 35) veto.push('战略层仅 ' + fmt(o.sScore,1) + ' 分，不合格标的');
   if (veto.length) { verdict = '明确不建议'; color = 'var(--green)'; }
 
   // 价位区间
