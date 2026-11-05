@@ -2439,10 +2439,31 @@ function buildReasons(s, sc) {
     return out;
   }
 
-  // 估值
-  if (s.pe < 10 && s.pb < 1) out.push({m:`<b>三门槛过两条</b>：PE ${fmt(s.pe,1)} < 10、PB ${fmt(s.pb,2)} < 1，但股息率 ${fmt(s.divYield,2)}% ${s.divYield>=4?'已过 4%':'未到 4%'}。`});
-  else if (s.pb < 1) out.push({m:`<b>PB ${fmt(s.pb,2)} 破净</b>，但 PE ${fmt(s.pe,1)} ${s.pe<10?'尚可':'已不便宜'}，股息率 ${fmt(s.divYield,2)}% ${s.divYield>=4?'过门槛':'未过 4%'}。`});
-  else out.push({m:`<b>三条门槛全不过</b>：PE ${fmt(s.pe,1)}、PB ${fmt(s.pb,2)}、股息率 ${fmt(s.divYield,2)}%。这是一只靠成长/趋势定价的股票，不是典型的长期价值仓标的。`});
+  // 估值：三门槛必须逐条数。原来只判了 PE<10 && PB<1，没把股息率当条件，
+  // 导致 PB≥1 但 PE、股息率都达标的票（格力这种）被误判成"三条全不过"。
+  const gPE = s.pe != null && s.pe < 10;
+  const gPB = s.pb != null && s.pb < 1;
+  const gDY = s.divYield != null && s.divYield >= 4;
+  const gN  = (gPE ? 1 : 0) + (gPB ? 1 : 0) + (gDY ? 1 : 0);
+  const gTxt = `PE ${fmt(s.pe,1)}${gPE ? ' ✓' : ' ✗'}、PB ${fmt(s.pb,2)}${gPB ? ' ✓' : ' ✗'}、股息率 ${fmt(s.divYield,2)}%${gDY ? ' ✓' : ' ✗'}`;
+  const gMiss = [];
+  if (!gPE) gMiss.push('PE 没低于 10 倍');
+  if (!gPB) gMiss.push('PB 没破净');
+  if (!gDY) gMiss.push('股息率没到 4%');
+  if (gN === 3) {
+    out.push({t:'gold', m:`<b>三门槛全过</b>：${gTxt}。低估值、破净、高股息同时成立，这是最典型的「好公司 + 好价格」。`});
+  } else if (gN === 2) {
+    const why = !gPB
+      ? 'PB 没破净，对轻资产、高 ROE 的公司是常态——好公司很少按清算价卖，破净更多出现在银行、钢铁、地产这类重资产行业。所以这条没过大可不必当硬伤，真正要看的是 PE 和股息率这两条。'
+      : (!gPE
+        ? 'PE 已经过了 10 倍，说明现价里含了成长预期，不再是纯粹的「便宜」。'
+        : '股息率没到 4%，收息这条不成立，只能赚价差。');
+    out.push({m:`<b>三门槛过两条</b>：${gTxt}（差「${gMiss[0]}」这一条）。${why}`});
+  } else if (gN === 1) {
+    out.push({m:`<b>三门槛只过一条</b>：${gTxt}（差${gMiss.map(x=>'「'+x+'」').join('、')}）。它只满足了部分条件，别当成「低估值高股息」来买。`});
+  } else {
+    out.push({m:`<b>三门槛全不过</b>：${gTxt}。它不在「低估值 + 高股息」这个框架里，得用成长或趋势的尺子看，不能用收息逻辑。`});
+  }
 
   // 位置
   if (s.pos52 > 85) out.push({t:'warn', m:`<b>位置 ${fmt(s.pos52,0)}% 分位</b>，距 52 周高点只有 ${Math.abs(s.dd52).toFixed(1)}%。他 10 月刚说过：银行与高股息央企"有防御价值，但不适合追高"——这句话现在就落在它身上。`});
